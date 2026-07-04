@@ -1,0 +1,8 @@
+{
+  "name": "@wednesdayai/example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "index.ts",
+  "description": "Fixture plugin for CI validation"
+}

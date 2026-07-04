@@ -1,1 +1,12 @@
-{"version":1,"plugins":[]}
+{
+  "version": 1,
+  "plugins": [
+    {
+      "id": "example",
+      "name": "Example Plugin",
+      "description": "A minimal fixture plugin for CI validation. Not published.",
+      "kind": "misc",
+      "npmSpec": "@wednesdayai/example"
+    }
+  ]
+}

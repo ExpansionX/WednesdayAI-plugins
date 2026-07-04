@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -12,5 +13,19 @@ jobs:
         with:
           node-version: 24
       - run: npm i -g pnpm@10.23.0
-      - run: pnpm install
-      - run: pnpm lint
+      - run: pnpm install --frozen-lockfile
+      - name: Validate manifests
+        run: node scripts/validate-manifest.mjs
+      - name: Generate catalog (drift check)
+        run: node scripts/generate-catalog.mjs --check
+      - name: Validate skills
+        run: node scripts/validate-skills.mjs
+      - name: Typecheck plugins
+        run: |
+          for d in plugins/*/; do
+            if [ -f "$d/package.json" ] && [ -f "$d/tsconfig.json" ]; then
+              (cd "$d" && npx tsc --noEmit) || exit 1
+            fi
+          done
+      - name: Lint
+        run: pnpm lint

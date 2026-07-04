@@ -1,0 +1,11 @@
+{
+  "id": "example",
+  "name": "Example Plugin",
+  "description": "A minimal fixture plugin for CI validation. Not published.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "greeting": { "type": "string" }
+    }
+  }
+}

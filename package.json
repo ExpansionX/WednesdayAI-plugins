@@ -9,6 +9,10 @@
   },
   "scripts": {
     "lint": "oxlint .",
-    "format": "oxfmt --check ."
+    "format": "oxfmt --check .",
+    "validate:manifest": "node scripts/validate-manifest.mjs",
+    "validate:skills": "node scripts/validate-skills.mjs",
+    "catalog": "node scripts/generate-catalog.mjs",
+    "catalog:check": "node scripts/generate-catalog.mjs --check"
   }
 }
