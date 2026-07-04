@@ -1,0 +1,35 @@
+name: publish
+on:
+  push:
+    tags:
+      - "*-v*"
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm i -g pnpm@10.23.0
+      - run: pnpm install --frozen-lockfile
+      - name: Resolve plugin dir from tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF##*/}"
+          ID="${TAG%-v*}"
+          echo "plugin_id=${ID}" >> "$GITHUB_OUTPUT"
+          echo "plugin_dir=plugins/${ID}" >> "$GITHUB_OUTPUT"
+      - name: Build plugin
+        if: ${{ hashFiles(format('{0}/package.json', steps.tag.outputs.plugin_dir)) != '' }}
+        run: pnpm --filter ./${{ steps.tag.outputs.plugin_dir }} run build
+        continue-on-error: false
+      - name: Publish to npm
+        if: ${{ github.ref_type == 'tag' && !contains(steps.tag.outputs.plugin_id, 'example') }}
+        run: pnpm --filter ./${{ steps.tag.outputs.plugin_dir }} exec npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
