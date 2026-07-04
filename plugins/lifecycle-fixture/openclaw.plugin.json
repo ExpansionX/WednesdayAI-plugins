@@ -1,0 +1,9 @@
+{
+  "id": "lifecycle-fixture",
+  "name": "Lifecycle Fixture",
+  "description": "Test fixture exercising api.on() lifecycle hooks. Permanent resident — not published.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

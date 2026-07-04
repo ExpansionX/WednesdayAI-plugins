@@ -1,0 +1,16 @@
+{
+  "name": "@wednesdayai/lifecycle-fixture",
+  "version": "0.0.0",
+  "description": "WednesdayAI lifecycle test fixture — not published",
+  "type": "module",
+  "private": true,
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

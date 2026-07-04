@@ -1,0 +1,30 @@
+{
+  "name": "@wednesdayai/brave-search",
+  "version": "1.0.0",
+  "description": "WednesdayAI Brave Search provider plugin",
+  "type": "module",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "src"
+  ],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "openclaw": "*",
+    "vitest": "^4.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

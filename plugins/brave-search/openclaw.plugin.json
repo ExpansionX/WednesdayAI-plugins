@@ -1,0 +1,19 @@
+{
+  "id": "brave-search",
+  "name": "Brave Search",
+  "description": "Web search via Brave Search API. Supports region-specific and localized search.",
+  "providers": { "webSearch": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "webSearch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiKey": { "type": "string" }
+        }
+      }
+    }
+  }
+}
