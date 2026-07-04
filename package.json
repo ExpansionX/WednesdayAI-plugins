@@ -1,0 +1,14 @@
+{
+  "name": "wednesdayai-plugins",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.23.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "lint": "oxlint .",
+    "format": "oxfmt --check ."
+  }
+}
