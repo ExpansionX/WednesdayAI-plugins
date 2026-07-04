@@ -1,19 +1,19 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
-let shutdownCalled = false;
+let gatewayStopCalled = false;
 
 const plugin = {
   id: "lifecycle-fixture",
   name: "Lifecycle Fixture",
   description: "Test fixture exercising api.on() lifecycle hooks.",
   register(api: OpenClawPluginApi) {
-    api.on("shutdown", () => {
-      shutdownCalled = true;
+    api.on("gateway_stop", () => {
+      gatewayStopCalled = true;
     });
   },
 };
 
 export default plugin;
-export function __wasShutdownCalled(): boolean {
-  return shutdownCalled;
+export function __wasGatewayStopCalled(): boolean {
+  return gatewayStopCalled;
 }
