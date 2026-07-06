@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "codex",
+    "exec",
+    "-C",
+    "/Users/david/Code/WednesdayAI-plugins",
+    "--sandbox",
+    "read-only",
+    "--json",
+    "-"
+  ],
+  "cwd": "/Users/david/Code/WednesdayAI-plugins",
+  "exit_code": 0,
+  "finished_at": "2026-07-06T06:29:07.807366+00:00",
+  "notes": [],
+  "prompt_file": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-find.md",
+  "raw_log": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-r1-codex.raw.log",
+  "report": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-r1-codex.md",
+  "safety": "read-only",
+  "schema_version": "dr.executor.panel.v1",
+  "started_at": "2026-07-06T06:25:32.389475+00:00",
+  "status": "ok",
+  "task": "plan-review",
+  "tool": "codex",
+  "tool_version": "codex-cli 0.142.5"
+}
