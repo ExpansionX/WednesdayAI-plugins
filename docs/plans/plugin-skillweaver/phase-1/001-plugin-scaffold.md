@@ -83,9 +83,6 @@ For each file in `files:`:
     "typescript": "^5.9.0",
     "vitest": "^4.0.0"
   },
-  "peerDependencies": {
-    "wednesdayai": "*"
-  },
   "openclaw": {
     "extensions": [
       "./index.ts"
