@@ -8,6 +8,7 @@ parallel: false
 conflicts_with: []
 files:
   - extensions/skillweaver/src/config.ts
+  - extensions/skillweaver/src/config.test.ts
 irreversible: false
 scope_test: "extensions/skillweaver/src/config.test.ts"
 allowed_change: create
