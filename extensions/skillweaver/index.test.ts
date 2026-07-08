@@ -75,4 +75,22 @@ describe("plugin register() wiring", () => {
     });
     expect(() => plugin.register(api)).not.toThrow();
   });
+
+  it("handles duplicate register() calls without crash", () => {
+    const api = createMockApi();
+    plugin.register(api);
+    expect(() => plugin.register(api)).not.toThrow();
+  });
+
+  it("does not register when embedding backend is missing", () => {
+    const api = createMockApi({
+      pluginConfig: { embedding: { backend: "custom" } }, // custom requires endpoint
+    });
+    expect(() => plugin.register(api)).toThrow();
+  });
+
+  it("handles null pluginConfig gracefully", () => {
+    const api = createMockApi({ pluginConfig: null as never });
+    expect(() => plugin.register(api)).not.toThrow();
+  });
 });

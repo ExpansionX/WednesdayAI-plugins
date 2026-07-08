@@ -125,6 +125,15 @@ const plugin = {
 
     api.on("context.collect", handler);
 
+    let disposed = false;
+    api.on("gateway_stop", async () => {
+      if (disposed) return;
+      disposed = true;
+      decomposer.dispose();
+      index.dispose();
+      await Promise.resolve(backend.dispose());
+    });
+
     discoverSkills(config).then((skills) => {
       index.build(skills).catch((err: unknown) => {
         api.logger.warn("skillweaver: initial index build failed", { error: String(err) });
