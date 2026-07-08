@@ -4,8 +4,14 @@ import { describe, it, expect, vi, beforeAll } from "vitest";
 
 const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-vi.mock("@xenova/transformers", () => ({
-  pipeline: vi.fn().mockResolvedValue(vi.fn()),
+vi.mock("./src/embedding/local.js", () => ({
+  LocalEmbedding: class {
+    id = "local";
+    dimensions = 384;
+    dispose() {}
+    embed = vi.fn();
+    embedSingle = vi.fn();
+  },
 }));
 
 vi.mock("wednesdayai/plugin-sdk", () => ({
