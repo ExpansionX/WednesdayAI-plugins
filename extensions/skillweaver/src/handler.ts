@@ -43,24 +43,20 @@ export function createCollectHandler(opts: HandlerOptions) {
       const pass1Result = await opts.decomposer.decompose(text, undefined, undefined, AbortSignal.timeout(timeoutMs));
       if (pass1Result.subTasks.length === 0) return {};
 
-      let subTasks: string[];
+      let subTasks = pass1Result.subTasks.filter((s) => s.trim().length > 0);
+      if (subTasks.length === 0) return {};
       let actualPass: 1 | 2 = 1;
 
-      if (opts.sadEnabled && pass1Result.subTasks.length > 0) {
-        const hints = await opts.retriever.buildHintSet(pass1Result.subTasks);
+      if (opts.sadEnabled) {
+        const hints = await opts.retriever.buildHintSet(subTasks);
         if (hints.length > 0) {
           const pass2Result = await opts.decomposer.decompose(text, hints, undefined, AbortSignal.timeout(timeoutMs));
-          if (pass2Result.subTasks.length > 0) {
-            subTasks = pass2Result.subTasks;
+          const filteredPass2 = pass2Result.subTasks.filter((s) => s.trim().length > 0);
+          if (filteredPass2.length > 0) {
+            subTasks = filteredPass2;
             actualPass = 2;
-          } else {
-            subTasks = pass1Result.subTasks;
           }
-        } else {
-          subTasks = pass1Result.subTasks;
         }
-      } else {
-        subTasks = pass1Result.subTasks;
       }
 
       const results = await opts.retriever.retrieve(subTasks);
