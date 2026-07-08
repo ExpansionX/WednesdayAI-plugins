@@ -78,7 +78,10 @@ export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
 
   function toBool(v: unknown, fallback: boolean): boolean {
     if (typeof v === "boolean") return v;
-    if (typeof v === "string") return v.toLowerCase() !== "false" && v.toLowerCase() !== "0" && v !== "";
+    if (typeof v === "string") {
+      const trimmed = v.trim();
+      return trimmed !== "false" && trimmed !== "0" && trimmed !== "";
+    }
     if (v === undefined || v === null) return fallback;
     return Boolean(v);
   }
@@ -138,29 +141,4 @@ export function checkSkillsMode(coreConfig: Record<string, unknown> | undefined)
   const mode = sections?.skills as string | undefined;
   if (mode === "compact" || mode === "names" || mode === "off") return mode;
   return "default";
-}
-
-export interface EffectiveDecomposerConfig {
-  provider: string;
-  model: string;
-  apiKey?: string | null;
-  baseUrl?: string | null;
-  temperature: number;
-  maxTokens: number;
-}
-
-export function resolveEffectiveDecomposerConfig(
-  cfg: SkillWeaverConfig,
-  agentDefaults?: { provider?: string; model?: string },
-): EffectiveDecomposerConfig {
-  const provider = agentDefaults?.provider || cfg.decomposer.provider || "openrouter";
-  const model = agentDefaults?.model || cfg.decomposer.model || "qwen/qwen2.5-7b-instruct";
-  return {
-    provider,
-    model,
-    apiKey: cfg.decomposer.apiKey ?? null,
-    baseUrl: cfg.decomposer.baseUrl ?? null,
-    temperature: cfg.decomposer.temperature,
-    maxTokens: cfg.decomposer.maxTokens,
-  };
 }

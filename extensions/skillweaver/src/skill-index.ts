@@ -50,6 +50,10 @@ export class SkillIndex {
     });
 
     const vectors = await this.backend.embed(documents);
+    if (vectors.length !== names.length) {
+      log.warn("embed returned mismatched count", { expected: names.length, got: vectors.length });
+      return;
+    }
     for (let i = 0; i < names.length; i++) {
       const existing = newSkills.get(names[i]);
       if (existing) existing.vector = vectors[i];
@@ -121,19 +125,24 @@ export class SkillIndex {
   ): ReturnType<typeof watch> | null {
     if (this.disposed) return null;
     if (this.watchers.has(dir)) return this.watchers.get(dir)!;
+
+    const scheduleRebuild = () => {
+      if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
+      this.rebuildTimer = setTimeout(async () => {
+        try {
+          const entries = await skillProvider();
+          await this.build(entries);
+        } catch (err) {
+          log.error("rebuild failed", { error: String(err) });
+        }
+      }, opts.debounceMs ?? 2000);
+    };
+
     try {
       const useRecursive = process.platform === "darwin" || process.platform === "win32";
       const w = watch(dir, { persistent: false, recursive: useRecursive }, (_event, filename) => {
         if (!filename?.endsWith("SKILL.md")) return;
-        if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
-        this.rebuildTimer = setTimeout(async () => {
-          try {
-            const entries = await skillProvider();
-            await this.build(entries);
-          } catch (err) {
-            log.error("rebuild failed", { error: String(err) });
-          }
-        }, opts.debounceMs ?? 2000);
+        scheduleRebuild();
       });
       w.on("error", (err) => {
         log.warn("watcher error", { dir, error: String(err) });
@@ -141,6 +150,24 @@ export class SkillIndex {
         this.watchers.delete(dir);
       });
       this.watchers.set(dir, w);
+
+      if (!useRecursive) {
+        try {
+          const { readdirSync } = require("node:fs");
+          const { join } = require("node:path");
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            if (entry.isDirectory()) {
+              const subDir = join(dir, entry.name);
+              const subW = watch(subDir, { persistent: false }, (_event, filename) => {
+                if (filename === "SKILL.md") scheduleRebuild();
+              });
+              subW.on("error", () => { /* ignore subdir errors */ });
+              this.watchers.set(subDir, subW);
+            }
+          }
+        } catch { /* ignore readdir errors */ }
+      }
+
       return w;
     } catch {
       return null;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveConfig, checkSkillsMode, validateConfig, resolveEffectiveDecomposerConfig } from "./config.js";
+import { resolveConfig, checkSkillsMode, validateConfig } from "./config.js";
 
 const defaults = {
   enabled: true,
@@ -68,27 +68,5 @@ describe("checkSkillsMode", () => {
   it("detects 'compact' mode", () => {
     const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: "compact" } } } } });
     expect(result).toBe("compact");
-  });
-});
-
-describe("resolveEffectiveDecomposerConfig", () => {
-  it("uses configured provider/model when set", () => {
-    const cfg = resolveConfig({ decomposer: { provider: "anthropic", model: "claude-haiku" } });
-    const result = resolveEffectiveDecomposerConfig(cfg);
-    expect(result.provider).toBe("anthropic");
-    expect(result.model).toBe("claude-haiku");
-  });
-
-  it("falls back to agent defaults when decomposer is unconfigured", () => {
-    const cfg = resolveConfig({});
-    const result = resolveEffectiveDecomposerConfig(cfg, { provider: "openai", model: "gpt-4o-mini" });
-    expect(result.provider).toBe("openai");
-    expect(result.model).toBe("gpt-4o-mini");
-  });
-
-  it("falls back to built-in defaults when nothing is configured", () => {
-    const cfg = resolveConfig({});
-    const result = resolveEffectiveDecomposerConfig(cfg);
-    expect(result.provider).toBe("openrouter");
   });
 });
