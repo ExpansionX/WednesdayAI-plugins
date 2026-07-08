@@ -18,12 +18,12 @@ function estimateTokens(text: string): number {
 }
 
 function sanitizeMarkdown(text: string): string {
-  return text.replace(/[#*_[\]`]/g, "\\$&").replace(/\n/g, " ").slice(0, 200);
+  return text.replace(/[#*_[\]`<>]/g, "\\$&").replace(/\n/g, " ").slice(0, 200);
 }
 
 export function formatSkillContext(
   skills: SearchResult[],
-  query: string,
+  _query: string,
   subTasks: string[],
   decomposerModel?: string,
 ): PromptContribution {

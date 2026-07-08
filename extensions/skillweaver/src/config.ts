@@ -78,7 +78,8 @@ export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
 
   function toBool(v: unknown, fallback: boolean): boolean {
     if (typeof v === "boolean") return v;
-    if (typeof v === "string") return v !== "false" && v !== "0" && v !== "";
+    if (typeof v === "string") return v.toLowerCase() !== "false" && v.toLowerCase() !== "0" && v !== "";
+    if (v === undefined || v === null) return fallback;
     return Boolean(v);
   }
 

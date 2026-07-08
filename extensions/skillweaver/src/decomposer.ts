@@ -52,8 +52,8 @@ Output ONLY a JSON object with a "subTasks" key containing an array of strings:`
 
 function formatHints(hints: HintEntry[]): string {
   const sanitized = hints.map((h) => {
-    const name = h.name.replace(/[#*_[\]`<>]/g, "").slice(0, 100);
-    const desc = h.description.replace(/[#*_[\]`<>]/g, "").slice(0, 200);
+    const name = h.name.replace(/[#*_[\]`<>]/g, "").replace(/\n+/g, " ").slice(0, 100);
+    const desc = h.description.replace(/[#*_[\]`<>]/g, "").replace(/\n+/g, " ").slice(0, 200);
     return `- ${name}: ${desc}`;
   });
   return `<available_skills>\n${sanitized.join("\n")}\n</available_skills>`;
@@ -113,7 +113,7 @@ export class Decomposer {
       let prompt = hasHints
         ? buildSADPass2Prompt(query, formatHints(hints))
         : buildSADPass1Prompt(query);
-      if (hints && hints.length < 3 && hints.length > 0) {
+      if (hasHints && hints.length < 3) {
         prompt += "\n\nIf no skill matches the sub-task, use a clear description that would help a human find the right tool.";
       }
 
