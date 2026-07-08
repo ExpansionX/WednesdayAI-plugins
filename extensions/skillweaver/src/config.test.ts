@@ -30,17 +30,22 @@ describe("resolveConfig", () => {
 
 describe("validateConfig", () => {
   it("rejects invalid backend", () => {
-    expect(() => validateConfig({ embedding: { backend: "invalid" } } as never))
-      .toThrow(/backend/);
+    const config = resolveConfig({ embedding: { backend: "invalid" } });
+    expect(() => validateConfig(config)).toThrow(/backend/);
   });
 
   it("rejects invalid decomposer provider", () => {
-    expect(() => validateConfig({ decomposer: { provider: "gemini" } } as never))
-      .toThrow(/provider/);
+    const config = resolveConfig({ decomposer: { provider: "gemini" } });
+    expect(() => validateConfig(config)).toThrow(/provider/);
   });
 
   it("accepts valid config", () => {
     expect(() => validateConfig(defaults as never)).not.toThrow();
+  });
+
+  it("rejects custom backend without endpoint", () => {
+    const config = resolveConfig({ embedding: { backend: "custom" } });
+    expect(() => validateConfig(config)).toThrow(/endpoint/);
   });
 });
 

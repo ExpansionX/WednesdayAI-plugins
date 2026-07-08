@@ -1,4 +1,7 @@
 import type { DecompositionResult, HintEntry } from "./embedding/types.js";
+import { createSubsystemLogger } from "./logger.js";
+
+const log = createSubsystemLogger("skillweaver/decomposer");
 
 export interface DecomposerOptions {
   fetchRaw?: typeof fetch;
@@ -27,7 +30,9 @@ function resolveEndpoint(provider: string, baseUrl?: string | null): string {
 export function buildSADPass1Prompt(query: string): string {
   return `You are a query decomposition tool. Break the following user query into a list of atomic sub-tasks. Each sub-task should be a single, self-contained action that could be performed by a specific skill.
 
-Query: ${query}
+<user_query>
+${query}
+</user_query>
 
 Output ONLY a JSON object with a "subTasks" key containing an array of strings:`;
 }
@@ -38,7 +43,9 @@ export function buildSADPass2Prompt(query: string, hints: string): string {
 Available skills:
 ${hints}
 
-Query: ${query}
+<user_query>
+${query}
+</user_query>
 
 Output ONLY a JSON object with a "subTasks" key containing an array of strings:`;
 }
@@ -65,7 +72,7 @@ export function extractJsonArray(text: string): string[] {
       return parsed;
     }
   } catch { /* fall through to substring extraction */ }
-  const arrayMatch = cleaned.match(/\[([\s\S]*)\]/);
+  const arrayMatch = cleaned.match(/\[([\s\S]*?)\]/);
   if (arrayMatch) {
     try {
       const reparsed = JSON.parse(`[${arrayMatch[1]}]`);
@@ -113,7 +120,7 @@ export class Decomposer {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
 
       if (isAnthropic) {
-        headers["x-api-key"] = this.config.apiKey ?? "";
+        if (this.config.apiKey) headers["x-api-key"] = this.config.apiKey;
         headers["anthropic-version"] = "2023-06-01";
         body = JSON.stringify({
           model: this.config.model,
@@ -123,7 +130,7 @@ export class Decomposer {
           messages: [{ role: "user", content: prompt }],
         });
       } else {
-        headers.Authorization = `Bearer ${this.config.apiKey ?? ""}`;
+        if (this.config.apiKey) headers.Authorization = `Bearer ${this.config.apiKey}`;
         if (isOpenRouter) {
           headers["HTTP-Referer"] = "wednesdayai-skillweaver";
         }
@@ -132,7 +139,7 @@ export class Decomposer {
           temperature: this.config.temperature,
           max_tokens: this.config.maxTokens,
           messages: [
-            { role: "system", content: "Output ONLY a JSON array of strings. No other text." },
+            { role: "system", content: "Output ONLY a JSON object with a \"subTasks\" key containing an array of strings. No other text." },
             { role: "user", content: prompt },
           ],
         });
@@ -161,7 +168,8 @@ export class Decomposer {
       }
 
       return { subTasks, hints: [], pass: hasHints ? 2 : 1 };
-    } catch {
+    } catch (err) {
+      log.warn("decompose failed", { error: String(err), provider: this.config.provider });
       return { subTasks: [], hints: [], pass: 1 };
     }
   }

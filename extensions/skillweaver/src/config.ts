@@ -60,10 +60,15 @@ const VALID_BACKENDS = new Set(["local", "cloud", "custom"]);
 const VALID_PROVIDERS = new Set(["openrouter", "openai", "anthropic", "openai-compatible"]);
 
 export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
-  const decomposer = { ...DEFAULTS.decomposer, ...(raw.decomposer as Partial<SkillWeaverConfig["decomposer"]> ?? {}) };
-  const embedding = { ...DEFAULTS.embedding, ...(raw.embedding as Partial<SkillWeaverConfig["embedding"]> ?? {}) };
-  const retrieval = { ...DEFAULTS.retrieval, ...(raw.retrieval as Partial<SkillWeaverConfig["retrieval"]> ?? {}) };
-  const sad = { ...DEFAULTS.sad, ...(raw.sad as Partial<SkillWeaverConfig["sad"]> ?? {}) };
+  const rawObj = (v: unknown): Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
+  const decomposer = { ...DEFAULTS.decomposer, ...rawObj(raw.decomposer) as Partial<SkillWeaverConfig["decomposer"]> };
+  const embedding = { ...DEFAULTS.embedding, ...rawObj(raw.embedding) as Partial<SkillWeaverConfig["embedding"]> };
+  const retrieval = { ...DEFAULTS.retrieval, ...rawObj(raw.retrieval) as Partial<SkillWeaverConfig["retrieval"]> };
+  const sad = { ...DEFAULTS.sad, ...rawObj(raw.sad) as Partial<SkillWeaverConfig["sad"]> };
+  const rawSkills = rawObj(raw.skills);
+  const skills = { dirs: (rawSkills.dirs as string[] | undefined) ?? DEFAULTS.skills.dirs };
   return {
     ...DEFAULTS,
     enabled: raw.enabled !== undefined ? Boolean(raw.enabled) : DEFAULTS.enabled,
@@ -71,21 +76,28 @@ export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
     embedding,
     retrieval,
     sad,
+    skills,
   };
 }
 
 export function validateConfig(config: SkillWeaverConfig): void {
-  if (config.decomposer && !VALID_PROVIDERS.has(config.decomposer.provider)) {
+  if (!VALID_PROVIDERS.has(config.decomposer.provider)) {
     throw new Error(`Invalid decomposer provider: ${config.decomposer.provider}`);
   }
-  if (config.embedding && !VALID_BACKENDS.has(config.embedding.backend)) {
+  if (!VALID_BACKENDS.has(config.embedding.backend)) {
     throw new Error(`Invalid embedding backend: ${config.embedding.backend}`);
   }
-  if (config.retrieval && (config.retrieval.topK < 1 || config.retrieval.topK > 10)) {
+  if (config.retrieval.topK < 1 || config.retrieval.topK > 10) {
     throw new Error(`topK must be 1-10, got ${config.retrieval.topK}`);
   }
-  if (config.sad && (config.sad.maxIterations < 1 || config.sad.maxIterations > 5)) {
-    throw new Error(`maxIterations must be 1-5, got ${config.sad.maxIterations}`);
+  if (config.retrieval.hintSize < 5 || config.retrieval.hintSize > 50) {
+    throw new Error(`hintSize must be 5-50, got ${config.retrieval.hintSize}`);
+  }
+  if (config.retrieval.minQueryLength < 5 || config.retrieval.minQueryLength > 500) {
+    throw new Error(`minQueryLength must be 5-500, got ${config.retrieval.minQueryLength}`);
+  }
+  if (config.embedding.backend === "custom" && !config.embedding.endpoint) {
+    throw new Error("embedding.endpoint is required when backend is 'custom'");
   }
 }
 

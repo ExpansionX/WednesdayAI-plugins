@@ -37,13 +37,13 @@ export function createCollectHandler(opts: HandlerOptions) {
 
     if (event.envelope && typeof event.envelope === "object" && (event.envelope as Record<string, unknown>)["isSubAgent"]) return {};
 
-    const abortController = new AbortController();
     const timeoutMs = opts.decomposerTimeoutMs ?? 30000;
-    const timer = setTimeout(() => abortController.abort(), timeoutMs);
 
     try {
-      const pass1Result = await opts.decomposer.decompose(text, undefined, undefined, abortController.signal);
-      clearTimeout(timer);
+      const pass1Controller = new AbortController();
+      const pass1Timer = setTimeout(() => pass1Controller.abort(), timeoutMs);
+      const pass1Result = await opts.decomposer.decompose(text, undefined, undefined, pass1Controller.signal);
+      clearTimeout(pass1Timer);
       if (pass1Result.subTasks.length === 0) return {};
 
       let subTasks: string[];
@@ -51,7 +51,10 @@ export function createCollectHandler(opts: HandlerOptions) {
       if (opts.sadEnabled && pass1Result.subTasks.length > 0) {
         const hints = await opts.retriever.buildHintSet(pass1Result.subTasks);
         if (hints.length > 0) {
-          const pass2Result = await opts.decomposer.decompose(text, hints, undefined, abortController.signal);
+          const pass2Controller = new AbortController();
+          const pass2Timer = setTimeout(() => pass2Controller.abort(), timeoutMs);
+          const pass2Result = await opts.decomposer.decompose(text, hints, undefined, pass2Controller.signal);
+          clearTimeout(pass2Timer);
           subTasks = pass2Result.subTasks.length > 0 ? pass2Result.subTasks : pass1Result.subTasks;
         } else {
           subTasks = pass1Result.subTasks;
@@ -72,8 +75,8 @@ export function createCollectHandler(opts: HandlerOptions) {
       }
 
       return contribution as CollectResult;
-    } catch {
-      clearTimeout(timer);
+    } catch (err) {
+      log.warn("handler failed", { error: String(err) });
       return {};
     }
   };

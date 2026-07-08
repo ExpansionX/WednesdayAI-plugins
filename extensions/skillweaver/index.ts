@@ -25,6 +25,8 @@ function resolveBackend(config: ReturnType<typeof resolveConfig>): EmbeddingBack
         endpoint: config.embedding.endpoint,
         apiKey: config.embedding.apiKey,
       });
+    default:
+      throw new Error(`Unknown embedding backend: ${config.embedding.backend}`);
   }
 }
 
@@ -34,7 +36,7 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
   const os = await import("node:os");
   const entries: SkillEntry[] = [];
 
-  const dirs: string[] = config.skills?.dirs ?? [];
+  const dirs: string[] = [...(config.skills?.dirs ?? [])];
   if (dirs.length === 0) {
     const defaultSkillsDir = path.join(os.homedir(), ".openclaw", "skills");
     try {
@@ -42,6 +44,8 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
       dirs.push(defaultSkillsDir);
     } catch { /* no default skills dir */ }
   }
+
+  const stripQuotes = (s: string): string => s.replace(/^["']|["']$/g, "");
 
   for (const dir of dirs) {
     try {
@@ -58,8 +62,8 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
           const descMatch = fmText.match(/^description:\s*(.+)/m);
           if (!nameMatch) continue;
           entries.push({
-            name: nameMatch[1].trim(),
-            description: descMatch?.[1]?.trim() ?? nameMatch[1].trim(),
+            name: stripQuotes(nameMatch[1].trim()),
+            description: stripQuotes(descMatch?.[1]?.trim() ?? nameMatch[1].trim()),
             location: skillFile,
             source: "managed",
           });
@@ -135,7 +139,42 @@ const plugin = {
     });
 
     discoverSkills(config).then((skills) => {
-      index.build(skills).catch((err: unknown) => {
+      index.build(skills).then(() => {
+        const dirs = [...(config.skills?.dirs ?? [])];
+        if (dirs.length > 0) {
+          index.watch(dirs[0], () => {
+            const { readdirSync, statSync } = require("node:fs");
+            const path = require("node:path");
+            const os = require("node:os");
+            const result: SkillEntry[] = [];
+            for (const dir of dirs) {
+              try {
+                const items = readdirSync(dir, { withFileTypes: true });
+                for (const item of items) {
+                  if (!item.isDirectory()) continue;
+                  const skillFile = path.join(dir, item.name, "SKILL.md");
+                  try {
+                    const content = require("node:fs").readFileSync(skillFile, "utf-8");
+                    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+                    if (!fmMatch) continue;
+                    const fmText = fmMatch[1];
+                    const nameMatch = fmText.match(/^name:\s*(.+)/m);
+                    const descMatch = fmText.match(/^description:\s*(.+)/m);
+                    if (!nameMatch) continue;
+                    result.push({
+                      name: nameMatch[1].trim().replace(/^["']|["']$/g, ""),
+                      description: descMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? nameMatch[1].trim().replace(/^["']|["']$/g, ""),
+                      location: skillFile,
+                      source: "managed",
+                    });
+                  } catch { /* skip unreadable */ }
+                }
+              } catch { /* skip unreadable dir */ }
+            }
+            return result;
+          });
+        }
+      }).catch((err: unknown) => {
         api.logger.warn("skillweaver: initial index build failed", { error: String(err) });
       });
     });

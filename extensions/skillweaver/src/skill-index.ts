@@ -12,7 +12,8 @@ export interface WatchOptions {
 export class SkillIndex {
   private backend: EmbeddingBackend;
   private skills = new Map<string, IndexedSkill>();
-  private index: Awaited<ReturnType<typeof this.createHnsw>> | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private index: any | null = null;
   private watcher: ReturnType<typeof watch> | null = null;
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private watchDir: string | null = null;
@@ -51,7 +52,7 @@ export class SkillIndex {
     const { HierarchicalNSW } = await import("hnswlib-node");
     const index = new HierarchicalNSW("cosine", this.backend.dimensions);
     index.initIndex(vectors.length);
-    index.setEf(400);
+    index.setEf(Math.min(400, Math.max(50, vectors.length * 2)));
 
     const ids = Array.from({ length: vectors.length }, (_, i) => i);
     ids.forEach((id, i) => index.addPoint(Array.from(vectors[i]), id));
@@ -68,9 +69,7 @@ export class SkillIndex {
     const k = Math.min(topK, this.skills.size);
     const result = this.index.searchKnn(Array.from(queryVector), k, undefined);
 
-    const hits = typeof result === "object" && result !== null
-      ? (result as unknown as { distances: number[] | Float64Array; neighbors: number[] | Float64Array })
-      : this.parseLegacyResult(result, k);
+    const hits = this.parseSearchResult(result);
 
     const results: SearchResult[] = [];
     for (let i = 0; i < Math.min(k, hits.neighbors.length); i++) {
@@ -145,7 +144,7 @@ export class SkillIndex {
     this.skills.clear();
   }
 
-  private parseLegacyResult(result: unknown, k: number): { distances: number[] | Float64Array; neighbors: number[] | Float64Array } {
+  private parseSearchResult(result: unknown): { distances: number[] | Float64Array; neighbors: number[] | Float64Array } {
     if (result && typeof result === "object" && "distances" in result && "neighbors" in result) {
       const r = result as Record<string, unknown>;
       return {
@@ -154,10 +153,5 @@ export class SkillIndex {
       };
     }
     throw new Error("hnswlib returned unrecognized search result shape");
-  }
-
-  private async createHnsw() {
-    const { HierarchicalNSW } = await import("hnswlib-node");
-    return new HierarchicalNSW("cosine", this.backend.dimensions);
   }
 }
