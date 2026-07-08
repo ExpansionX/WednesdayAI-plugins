@@ -8,6 +8,8 @@ parallel: false
 conflicts_with: []
 files:
   - extensions/skillweaver/index.ts
+  - extensions/skillweaver/index.test.ts
+  - extensions/skillweaver/src/lifecycle.test.ts
 irreversible: false
 scope_test: "extensions/skillweaver/index.test.ts"
 allowed_change: edit
