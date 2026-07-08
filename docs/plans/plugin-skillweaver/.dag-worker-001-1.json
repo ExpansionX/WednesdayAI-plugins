@@ -1,0 +1,20 @@
+{
+  "done": true,
+  "files_changed": [
+    "extensions/skillweaver/package.json",
+    "extensions/skillweaver/openclaw.plugin.json",
+    "extensions/skillweaver/tsconfig.json"
+  ],
+  "stop_reason": "",
+  "evidence": [
+    "commit 6ded9068efeb0c5d2a2578c45560f63a81488d54 created three files as specified",
+    "package.json name: @wednesdayai/skillweaver ✓",
+    "openclaw.plugin.json id: skillweaver ✓",
+    "tsconfig.json compilerOptions.module: NodeNext ✓",
+    "task-gate.sh output: CONFORMS: task 001 passed all deterministic gates",
+    "file-set check: only declared files changed (3 paths)",
+    "create check: addition recorded",
+    "typecheck check: override command exit 0",
+    "tests check: scope 'extensions/skillweaver' green"
+  ]
+}
