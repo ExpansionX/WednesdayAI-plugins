@@ -58,7 +58,8 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
         const skillFile = path.join(dir, item.name, "SKILL.md");
         try {
           const content = await fs.readFile(skillFile, "utf-8");
-          const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+          const normalized = content.replace(/^\uFEFF/, "");
+          const fmMatch = normalized.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
           if (!fmMatch) continue;
           const fmText = fmMatch[1];
           const nameMatch = fmText.match(/^name:\s*(.+)/m);

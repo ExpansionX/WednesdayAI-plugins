@@ -17,6 +17,7 @@ export class SkillIndex {
   private watchers = new Map<string, ReturnType<typeof watch>>();
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private buildGeneration = 0;
+  private disposed = false;
 
   constructor(backend: EmbeddingBackend) {
     this.backend = backend;
@@ -27,6 +28,7 @@ export class SkillIndex {
   }
 
   async build(entries: SkillEntry[]): Promise<void> {
+    if (this.disposed) return;
     const gen = ++this.buildGeneration;
     const newSkills = new Map<string, IndexedSkill>();
     if (entries.length === 0) {
@@ -117,6 +119,7 @@ export class SkillIndex {
     skillProvider: () => SkillEntry[] | Promise<SkillEntry[]>,
     opts: WatchOptions = {},
   ): ReturnType<typeof watch> | null {
+    if (this.disposed) return null;
     if (this.watchers.has(dir)) return this.watchers.get(dir)!;
     try {
       const useRecursive = process.platform === "darwin" || process.platform === "win32";
@@ -134,6 +137,7 @@ export class SkillIndex {
       });
       w.on("error", (err) => {
         log.warn("watcher error", { dir, error: String(err) });
+        w.close();
         this.watchers.delete(dir);
       });
       this.watchers.set(dir, w);
@@ -157,6 +161,7 @@ export class SkillIndex {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.buildGeneration++;
     this.unwatch();
     this.index = null;

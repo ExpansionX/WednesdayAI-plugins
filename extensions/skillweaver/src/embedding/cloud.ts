@@ -54,6 +54,7 @@ export class CloudEmbedding implements EmbeddingBackend {
 
   async embedSingle(text: string): Promise<Float32Array> {
     const results = await this.embed([text]);
+    if (results.length === 0) throw new Error("CloudEmbedding: backend returned empty result");
     return results[0];
   }
 

@@ -153,7 +153,8 @@ export class Decomposer {
       const response = await this.config.fetchRaw(endpoint, { method: "POST", headers, body, ...(signal ? { signal } : {}) });
 
       if (!response.ok) {
-        throw new Error(`Decomposer: request failed ${response.status}`);
+        const errBody = await response.text().catch(() => "");
+        throw new Error(`Decomposer: request failed ${response.status}: ${errBody}`);
       }
 
       const json = await response.json() as Record<string, unknown>;

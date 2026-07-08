@@ -55,6 +55,7 @@ export class CustomEmbedding implements EmbeddingBackend {
 
   async embedSingle(text: string): Promise<Float32Array> {
     const results = await this.embed([text]);
+    if (results.length === 0) throw new Error("CustomEmbedding: backend returned empty result");
     return results[0];
   }
 
