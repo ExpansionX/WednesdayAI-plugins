@@ -1,6 +1,10 @@
 import type { EmbeddingBackend } from "./types.js";
+import { createSubsystemLogger } from "../logger.js";
+
+const log = createSubsystemLogger("skillweaver/custom");
 
 const DEFAULT_TIMEOUT_MS = 30000;
+const MAX_ERROR_BODY_LENGTH = 500;
 
 export interface CustomEmbeddingOptions {
   endpoint?: string | null;
@@ -30,7 +34,7 @@ export class CustomEmbedding implements EmbeddingBackend {
     this.model = opts.model ?? "custom";
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!this.apiKey) {
-      console.warn("[WARN] [skillweaver/custom] No API key configured for custom endpoint. Set 'embedding.apiKey' if your endpoint requires authentication.");
+      log.warn("No API key configured for custom endpoint. Set 'embedding.apiKey' if your endpoint requires authentication.");
     }
   }
 
@@ -52,7 +56,8 @@ export class CustomEmbedding implements EmbeddingBackend {
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
-      throw new Error(`CustomEmbedding: request failed ${response.status}: ${await response.text()}`);
+      const errBody = (await response.text().catch(() => "")).slice(0, MAX_ERROR_BODY_LENGTH);
+      throw new Error(`CustomEmbedding: request failed ${response.status}: ${errBody}`);
     }
 
     const json = await response.json() as { data?: Array<{ embedding: number[]; index: number }> };

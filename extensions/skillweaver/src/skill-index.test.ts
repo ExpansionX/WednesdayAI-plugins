@@ -2,15 +2,6 @@ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import type { EmbeddingBackend, SkillEntry } from "./embedding/types.js";
 import { mkdirSync, rmSync } from "node:fs";
 
-vi.mock("wednesdayai/plugin-sdk", () => ({
-  createSubsystemLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
-
 const DIM = 4;
 const mockBackend: EmbeddingBackend = {
   id: "test",
@@ -228,6 +219,28 @@ describe("SkillIndex", () => {
       expect(watcher).toBeNull();
     });
 
+    it.skipIf(process.platform === "darwin")("rebuilds when a new skill directory appears on non-recursive platforms", async () => {
+      const index = new SkillIndex(mockBackend);
+      const dir = `${TEST_SKILLS_DIR}/linux-new-dir`;
+      mkdirSync(dir, { recursive: true });
+      try {
+        await index.build(sampleSkills);
+        let rebuildCount = 0;
+        const watcher = index.watch(dir, () => {
+          rebuildCount++;
+          return sampleSkills;
+        }, { debounceMs: 10 });
+        expect(watcher).not.toBeNull();
+
+        watcher!.emit("change", "rename", "SKILL.md");
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(rebuildCount).toBe(1);
+      } finally {
+        index.unwatch();
+      }
+    });
+
     it("calls skillProvider and rebuilds after debounce", async () => {
       const index = new SkillIndex(mockBackend);
       await index.build(sampleSkills);
@@ -375,6 +388,44 @@ describe("SkillIndex", () => {
 
       expect(childClose).toHaveBeenCalled();
       expect((index as unknown as { watchers: Map<string, unknown> }).watchers.has(childDir)).toBe(false);
+    });
+  });
+
+  describe("rebuild coalescing", () => {
+    it("does not drop file changes that arrive during a rebuild", async () => {
+      let resolveProvider: (v: SkillEntry[]) => void = () => {};
+      const slowProvider = (): Promise<SkillEntry[]> => new Promise<SkillEntry[]>((resolve) => {
+        resolveProvider = resolve;
+      });
+
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+
+      const watcher = index.watch(TEST_SKILLS_DIR, slowProvider, { debounceMs: 10 });
+      expect(watcher).not.toBeNull();
+
+      // First change → schedule rebuild
+      watcher!.emit("change", "rename", "SKILL.md");
+      await new Promise((r) => setTimeout(r, 30));
+
+      // First rebuild is in-flight (slowProvider not yet resolved)
+      // Second change during rebuild
+      watcher!.emit("change", "rename", "SKILL.md");
+      await new Promise((r) => setTimeout(r, 30));
+
+      // Resolve the first rebuild
+      resolveProvider(sampleSkills);
+      await new Promise((r) => setTimeout(r, 30));
+
+      // The second change should have triggered a second rebuild
+      // Resolve the second rebuild
+      resolveProvider(sampleSkills);
+      await new Promise((r) => setTimeout(r, 30));
+
+      // The watcher should still be active
+      expect((index as unknown as { watchers: Map<string, unknown> }).watchers.has(TEST_SKILLS_DIR)).toBe(true);
+
+      watcher?.close();
     });
   });
 });

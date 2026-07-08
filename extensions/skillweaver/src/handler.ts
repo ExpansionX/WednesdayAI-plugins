@@ -28,13 +28,19 @@ export interface HandlerOptions {
   retrievalTimeoutMs?: number;
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, context: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, context: string, onTimeout?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guarded = promise.finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+
   return Promise.race([
-    promise,
+    guarded,
     new Promise<T>((_, reject) => {
-      const timer = setTimeout(() => reject(new Error(`${context} timed out after ${ms}ms`)), ms);
-      // Ensure the timer is cleaned up if the promise settles first.
-      promise.then(() => clearTimeout(timer)).catch(() => clearTimeout(timer));
+      timer = setTimeout(() => {
+        onTimeout?.();
+        reject(new Error(`${context} timed out after ${ms}ms`));
+      }, ms);
     }),
   ]);
 }
@@ -52,12 +58,19 @@ export function createCollectHandler(opts: HandlerOptions) {
     const retrievalTimeoutMs = opts.retrievalTimeoutMs ?? 30000;
     const ac = new AbortController();
     const timeoutId = setTimeout(() => ac.abort(), timeoutMs);
+    const decomposerDeadline = Date.now() + timeoutMs;
+    const remainingDecomposerMs = () => Math.max(1, decomposerDeadline - Date.now());
 
     try {
-      const pass1Result = await opts.decomposer.decompose(text, undefined, undefined, ac.signal);
+      const pass1Result = await withTimeout(
+        opts.decomposer.decompose(text, undefined, undefined, ac.signal),
+        remainingDecomposerMs(),
+        "decomposer.decompose pass 1",
+        () => ac.abort(),
+      );
       if (pass1Result.subTasks.length === 0) return {};
 
-      let subTasks = pass1Result.subTasks.filter((s) => s.trim().length > 0);
+      let subTasks = pass1Result.subTasks.map((s) => s.trim()).filter((s) => s.length > 0);
       if (subTasks.length === 0) return {};
       let actualPass: 1 | 2 = 1;
 
@@ -68,8 +81,13 @@ export function createCollectHandler(opts: HandlerOptions) {
           "retriever.buildHintSet",
         );
         if (hints.length > 0 && !ac.signal.aborted) {
-          const pass2Result = await opts.decomposer.decompose(text, hints, undefined, ac.signal);
-          const filteredPass2 = pass2Result.subTasks.filter((s) => s.trim().length > 0);
+          const pass2Result = await withTimeout(
+            opts.decomposer.decompose(text, hints, undefined, ac.signal),
+            remainingDecomposerMs(),
+            "decomposer.decompose pass 2",
+            () => ac.abort(),
+          );
+          const filteredPass2 = pass2Result.subTasks.map((s) => s.trim()).filter((s) => s.length > 0);
           if (filteredPass2.length > 0) {
             subTasks = filteredPass2;
             actualPass = 2;

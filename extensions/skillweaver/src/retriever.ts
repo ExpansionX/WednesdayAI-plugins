@@ -39,7 +39,7 @@ export function createRetriever(index: SkillIndex, opts: RetrieverOptions): Retr
       }
 
       allResults.sort((a, b) => b.score - a.score);
-      const cap = Math.max(topK, maxResults);
+      const cap = Math.max(0, maxResults);
       return allResults.slice(0, cap);
     },
 

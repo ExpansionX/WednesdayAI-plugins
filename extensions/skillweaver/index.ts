@@ -36,11 +36,14 @@ function resolveBackend(config: ReturnType<typeof resolveConfig>): EmbeddingBack
   }
 }
 
-async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise<{ skills: SkillEntry[]; dirs: string[] }> {
+async function discoverSkills(config: ReturnType<typeof resolveConfig>, opts: { recursive?: boolean; maxDepth?: number } = {}): Promise<{ skills: SkillEntry[]; dirs: string[] }> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const os = await import("node:os");
   const entries: SkillEntry[] = [];
+  const seenFiles = new Set<string>();
+  const recursive = opts.recursive ?? false;
+  const maxDepth = opts.maxDepth ?? 3;
 
   const dirs: string[] = [...(config.skills?.dirs ?? [])];
   if (dirs.length === 0) {
@@ -53,41 +56,59 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
 
   const stripQuotes = (s: string): string => s.replace(/^["']|["']$/g, "");
 
-  for (const dir of dirs) {
+  async function walkDir(dir: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+    let items: import("node:fs").Dirent[];
     try {
-      const items = await fs.readdir(dir, { withFileTypes: true });
-      const skillDirs = items.filter((item) => item.isDirectory());
-      const results = await Promise.allSettled(
-        skillDirs.map(async (item) => {
-          const skillFile = path.join(dir, item.name, "SKILL.md");
-          const content = await fs.readFile(skillFile, "utf-8");
-          return { content, skillFile };
-        }),
-      );
-      for (const result of results) {
-        if (result.status === "rejected") continue;
-        try {
-          const { content, skillFile } = result.value;
-          const normalized = content.replace(/^\uFEFF/, "");
-          const fmMatch = normalized.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
-          if (!fmMatch) continue;
-          const fmText = fmMatch[1];
-          const nameMatch = fmText.match(/^name:\s*(.+)/m);
-          const descMatch = fmText.match(/^description:\s*(.+)/m);
-          if (!nameMatch) continue;
-          entries.push({
-            name: stripQuotes(nameMatch[1].trim()),
-            description: stripQuotes(descMatch?.[1]?.trim() ?? nameMatch[1].trim()),
-            location: skillFile,
-            source: "managed",
-          });
-        } catch (err) {
-          log.warn("skipping unreadable skill file", { error: String(err) });
-        }
-      }
+      items = await fs.readdir(dir, { withFileTypes: true });
     } catch (err) {
       log.warn("skipping unreadable skills dir", { dir, error: String(err) });
+      return;
     }
+    const results = await Promise.allSettled(
+      items.filter((item) => item.isDirectory()).map(async (item) => {
+        const skillDir = path.join(dir, item.name);
+        const skillFile = path.join(skillDir, "SKILL.md");
+        if (seenFiles.has(skillFile)) return null;
+        seenFiles.add(skillFile);
+        try {
+          const content = await fs.readFile(skillFile, "utf-8");
+          return { content, skillFile, skillDir };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const result of results) {
+      if (result.status === "rejected" || !result.value) continue;
+      const { content, skillFile } = result.value;
+      try {
+        const normalized = content.replace(/^\uFEFF/, "");
+        const fmMatch = normalized.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
+        if (!fmMatch) {
+          if (recursive) {
+            await walkDir(result.value.skillDir, depth + 1);
+          }
+          continue;
+        }
+        const fmText = fmMatch[1];
+        const nameMatch = fmText.match(/^name:\s*(.+)/m);
+        const descMatch = fmText.match(/^description:\s*(.+)/m);
+        if (!nameMatch) continue;
+        entries.push({
+          name: stripQuotes(nameMatch[1].trim()),
+          description: stripQuotes(descMatch?.[1]?.trim() ?? nameMatch[1].trim()),
+          location: skillFile,
+          source: "managed",
+        });
+      } catch (err) {
+        log.warn("skipping unreadable skill file", { error: String(err) });
+      }
+    }
+  }
+
+  for (const dir of dirs) {
+    await walkDir(dir, 0);
   }
 
   return { skills: entries, dirs };

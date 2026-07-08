@@ -1,9 +1,13 @@
 import type { EmbeddingBackend } from "./types.js";
+import { createSubsystemLogger } from "../logger.js";
+
+const log = createSubsystemLogger("skillweaver/cloud");
 
 const DEFAULT_MODEL = "text-embedding-3-small";
 const DEFAULT_ENDPOINT = "https://api.openai.com/v1/embeddings";
 const DEFAULT_DIMENSIONS = 1536;
 const DEFAULT_TIMEOUT_MS = 30000;
+const MAX_ERROR_BODY_LENGTH = 500;
 
 export interface CloudEmbeddingOptions {
   apiKey?: string | null;
@@ -30,7 +34,7 @@ export class CloudEmbedding implements EmbeddingBackend {
     this.dimensions = opts.dimensions ?? DEFAULT_DIMENSIONS;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!this.apiKey) {
-      console.warn("[WARN] [skillweaver/cloud] No API key configured. Set 'embedding.apiKey' or OPENAI_API_KEY env var.");
+      log.warn("No API key configured. Set 'embedding.apiKey' or OPENAI_API_KEY env var.");
     }
   }
 
@@ -52,7 +56,8 @@ export class CloudEmbedding implements EmbeddingBackend {
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
-      throw new Error(`CloudEmbedding: request failed ${response.status}: ${await response.text()}`);
+      const errBody = (await response.text().catch(() => "")).slice(0, MAX_ERROR_BODY_LENGTH);
+      throw new Error(`CloudEmbedding: request failed ${response.status}: ${errBody}`);
     }
 
     const json = await response.json() as { data?: Array<{ embedding: number[]; index: number }> };

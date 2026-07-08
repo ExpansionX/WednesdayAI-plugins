@@ -67,6 +67,16 @@ describe("resolveConfig", () => {
     expect(result.enabled).toBe(true);
   });
 
+  it("handles enabled: 0 (number, interpreted as false)", () => {
+    const result = resolveConfig({ enabled: 0 });
+    expect(result.enabled).toBe(false);
+  });
+
+  it("handles enabled: 1 (number, interpreted as true)", () => {
+    const result = resolveConfig({ enabled: 1 });
+    expect(result.enabled).toBe(true);
+  });
+
   it("handles skills.dirs as string (coerced to array)", () => {
     const result = resolveConfig({ skills: { dirs: "/path/to/skills" } });
     expect(result.skills.dirs).toEqual(["/path/to/skills"]);

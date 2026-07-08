@@ -46,6 +46,22 @@ describe("createRetriever", () => {
       const results = await retriever.retrieve([]);
       expect(results).toEqual([]);
     });
+
+    it("caps retrieved skills to hintSize even when topK is larger", async () => {
+      const results: SearchResult[] = Array.from({ length: 10 }, (_, i) => ({
+        name: `skill-${i}`,
+        description: `desc ${i}`,
+        location: `/x/${i}`,
+        source: "bundled",
+        score: 1 - i * 0.01,
+      }));
+      mockSearch.mockResolvedValue(results);
+
+      const retriever = createRetriever(mockIndex, { topK: 10, hintSize: 5 });
+      const capped = await retriever.retrieve(["task"]);
+
+      expect(capped).toHaveLength(5);
+    });
   });
 
   describe("buildHintSet()", () => {

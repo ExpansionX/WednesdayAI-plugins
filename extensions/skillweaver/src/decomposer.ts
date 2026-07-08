@@ -40,7 +40,9 @@ function resolveEndpoint(provider: string, baseUrl?: string | null): string {
 }
 
 function sanitizeQueryForPrompt(query: string): string {
-  return query.replace(/<\/user_query>/g, "");
+  return query
+    .replace(/<\/user_query>/g, "")
+    .replace(/<user_query>/g, "");
 }
 
 export function buildSADPass1Prompt(query: string): string {
@@ -197,7 +199,11 @@ export class Decomposer {
         if (!Array.isArray(contentArr) || contentArr.length === 0) {
           return { subTasks: [], pass: hasHints ? 2 : 1, errors: [{ type: "parse", message: "Anthropic response missing content array" }] };
         }
-        content = (contentArr[0] as { text?: string })?.text ?? "";
+        const firstBlock = contentArr[0] as { text?: string; type?: string };
+        if (firstBlock?.type && firstBlock.type !== "text") {
+          return { subTasks: [], pass: hasHints ? 2 : 1, errors: [{ type: "parse", message: `Anthropic response returned non-text block: ${firstBlock.type}` }] };
+        }
+        content = firstBlock?.text ?? "";
       } else {
         const choices = json.choices;
         if (!Array.isArray(choices) || choices.length === 0) {

@@ -25,6 +25,7 @@ export class SkillIndex {
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private buildGeneration = 0;
   private rebuilding = false;
+  private pendingRebuild = false;
   private disposed = false;
 
   constructor(backend: EmbeddingBackend) {
@@ -142,9 +143,19 @@ export class SkillIndex {
     if (this.watchers.has(dir)) return this.watchers.get(dir)!;
 
     const scheduleRebuild = () => {
+      if (this.disposed) return;
+      if (this.rebuilding) {
+        this.pendingRebuild = true;
+        return;
+      }
       if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
       this.rebuildTimer = setTimeout(async () => {
-        if (this.rebuilding) return;
+        this.rebuildTimer = null;
+        if (this.disposed) return;
+        if (this.rebuilding) {
+          this.pendingRebuild = true;
+          return;
+        }
         this.rebuilding = true;
         try {
           const entries = await skillProvider();
@@ -153,14 +164,45 @@ export class SkillIndex {
           log.error("rebuild failed", { error: String(err) });
         } finally {
           this.rebuilding = false;
+          if (this.pendingRebuild && !this.disposed) {
+            this.pendingRebuild = false;
+            scheduleRebuild();
+          }
         }
       }, opts.debounceMs ?? 2000);
+    };
+
+    const watchChildDirs = async () => {
+      try {
+        const entries = await readdir(dir, { withFileTypes: true });
+        if (this.disposed || !this.watchers.has(dir)) return;
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const subDir = join(dir, entry.name);
+          if (this.watchers.has(subDir)) continue;
+          const subW = watch(subDir, { persistent: false }, (_event, filename) => {
+            if (filename === "SKILL.md") scheduleRebuild();
+          });
+          subW.on("error", () => { /* ignore subdir errors */ });
+          if (this.disposed || !this.watchers.has(dir)) {
+            subW.close();
+            return;
+          }
+          this.watchers.set(subDir, subW);
+        }
+      } catch { /* ignore readdir errors */ }
     };
 
     try {
       const useRecursive = process.platform === "darwin" || process.platform === "win32";
       const w = watch(dir, { persistent: false, recursive: useRecursive }, (_event, filename) => {
-        if (!filename?.endsWith("SKILL.md")) return;
+        if (!filename?.endsWith("SKILL.md")) {
+          if (!useRecursive) {
+            scheduleRebuild();
+            void watchChildDirs();
+          }
+          return;
+        }
         scheduleRebuild();
       });
       w.on("error", (err) => {
@@ -177,18 +219,7 @@ export class SkillIndex {
       this.watchers.set(dir, w);
 
       if (!useRecursive) {
-        readdir(dir, { withFileTypes: true }).then((entries) => {
-          for (const entry of entries) {
-            if (entry.isDirectory()) {
-              const subDir = join(dir, entry.name);
-              const subW = watch(subDir, { persistent: false }, (_event, filename) => {
-                if (filename === "SKILL.md") scheduleRebuild();
-              });
-              subW.on("error", () => { /* ignore subdir errors */ });
-              this.watchers.set(subDir, subW);
-            }
-          }
-        }).catch(() => { /* ignore readdir errors */ });
+        void watchChildDirs();
       }
 
       return w;
@@ -203,6 +234,7 @@ export class SkillIndex {
       this.rebuildTimer = null;
     }
     this.rebuilding = false;
+    this.pendingRebuild = false;
     if (this.watchers.size > 0) {
       for (const w of this.watchers.values()) w.close();
       this.watchers.clear();

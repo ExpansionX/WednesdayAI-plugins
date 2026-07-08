@@ -5,15 +5,6 @@ vi.mock("@xenova/transformers", () => ({
   pipeline: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
-vi.mock("wednesdayai/plugin-sdk", () => ({
-  createSubsystemLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
-
 const mockDispose = vi.fn();
 const mockBackend: EmbeddingBackend = {
   id: "test",

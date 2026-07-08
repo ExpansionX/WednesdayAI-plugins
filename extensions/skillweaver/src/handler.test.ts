@@ -5,14 +5,6 @@ const mockRetriever = { retrieve: vi.fn(), buildHintSet: vi.fn() };
 const mockFormatSkillContext = vi.fn();
 
 vi.mock("./context-injector.js", () => ({ formatSkillContext: mockFormatSkillContext }));
-vi.mock("wednesdayai/plugin-sdk", () => ({
-  createSubsystemLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let createCollectHandler: any;
@@ -24,6 +16,7 @@ describe("createCollectHandler", () => {
   });
 
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -207,7 +200,7 @@ describe("createCollectHandler", () => {
 
   it("filters empty-string subtasks from Pass-1 result", async () => {
     mockDecomposer.decompose.mockResolvedValueOnce({
-      subTasks: ["", "  ", "task1", ""], hints: [], pass: 1,
+      subTasks: ["", "  ", "  task1  ", ""], hints: [], pass: 1,
     });
     mockRetriever.retrieve.mockResolvedValue([]);
     mockFormatSkillContext.mockReturnValueOnce({ prependContext: [] });
@@ -320,6 +313,26 @@ describe("createCollectHandler", () => {
     const pass1Signal = mockDecomposer.decompose.mock.calls[0][3];
     const pass2Signal = mockDecomposer.decompose.mock.calls[1][3];
     expect(pass1Signal).toBe(pass2Signal);
+  });
+
+  it("returns empty when decomposer ignores AbortSignal and exceeds timeout", async () => {
+    vi.useFakeTimers();
+    mockDecomposer.decompose.mockReturnValueOnce(new Promise(() => {}));
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 5,
+      decomposerModel: "test",
+      decomposerTimeoutMs: 10,
+    });
+
+    const resultPromise = handler(baseEvent);
+    await vi.advanceTimersByTimeAsync(20);
+
+    await expect(resultPromise).resolves.toEqual({});
+    expect(mockRetriever.retrieve).not.toHaveBeenCalled();
   });
 
   it("clears timeout on early return (empty subtasks)", async () => {
