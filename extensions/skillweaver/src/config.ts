@@ -152,6 +152,9 @@ export function validateConfig(config: SkillWeaverConfig): void {
       throw new Error(`embedding.cloudDimensions must be 1-4096, got ${config.embedding.cloudDimensions}`);
     }
   }
+  if (config.embedding.backend === "custom" && (!config.embedding.customModel || config.embedding.customModel.trim() === "")) {
+    throw new Error("embedding.customModel must be a non-empty string when backend is 'custom'");
+  }
   if (config.embedding.backend === "custom" && config.embedding.customDimensions != null) {
     if (!Number.isFinite(config.embedding.customDimensions) || !Number.isInteger(config.embedding.customDimensions)) {
       throw new Error("embedding.customDimensions must be a finite integer");

@@ -116,5 +116,8 @@ export function benchmarkMain(opts: {
     console.log(JSON.stringify(summary, null, 2));
     const pass = summary.catR10Rate >= 0.65 && summary.daPlusMinus1Rate >= 0.60;
     process.exit(pass ? 0 : 1);
+  }).catch((err) => {
+    console.error("benchmark failed:", err instanceof Error ? err.message : String(err));
+    process.exit(1);
   });
 }

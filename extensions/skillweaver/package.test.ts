@@ -12,7 +12,7 @@ describe("extension package scaffolding", () => {
     expect(pkg.name).toBe("@wednesdayai/skillweaver");
     expect(pkg.type).toBe("module");
     expect(pkg.openclaw).toBeDefined();
-    expect(pkg.openclaw.extensions).toEqual(["./index.ts"]);
+    expect(pkg.openclaw.extensions).toEqual(["./dist/index.js"]);
   });
 
   it("openclaw.plugin.json exists with required manifest fields", () => {

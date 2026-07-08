@@ -124,6 +124,15 @@ describe("LocalEmbedding", () => {
     await expect(backend.embed(["test"])).rejects.toThrow(/disposed/);
   });
 
+  it("preserves Xenova/ prefix in model name", async () => {
+    const backend = new LocalEmbedding("Xenova/all-MiniLM-L6-v2");
+    await (backend as unknown as { pipeline: Promise<unknown> }).pipeline;
+    expect(mockPipe).toHaveBeenCalledWith(
+      "feature-extraction",
+      "Xenova/all-MiniLM-L6-v2",
+    );
+  });
+
   it("stores pipeline error and throws on embed without unhandled rejection", async () => {
     const loadError = new Error("module not found");
     mockPipe.mockReturnValueOnce(Promise.reject(loadError));

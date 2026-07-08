@@ -94,6 +94,38 @@ describe("CustomEmbedding", () => {
     await expect(backend.embed(["test"])).rejects.toThrow(/missing 'data'/);
   });
 
+  it("throws descriptive error when embedding is missing", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [{ index: 0 }] }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings" });
+    await expect(backend.embed(["test"])).rejects.toThrow(/missing embedding array/);
+  });
+
+  it("throws on dimension mismatch", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: Array(256).fill(0.1), index: 0 }],
+      }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings", dimensions: 768 });
+    await expect(backend.embed(["test"])).rejects.toThrow(/dimension mismatch/);
+  });
+
+  it("embedSingle throws when embed returns empty data", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [] }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings" });
+    await expect(backend.embedSingle("test")).rejects.toThrow(/empty/);
+  });
+
   it("passes an AbortSignal to fetch for timeout", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

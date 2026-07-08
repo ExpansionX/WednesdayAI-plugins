@@ -160,6 +160,21 @@ describe("SkillIndex", () => {
       await index.build(sampleSkills);
       expect(index.size).toBe(0);
     });
+
+    it("clears existing index when rebuild returns mismatched count", async () => {
+      const badBackend: EmbeddingBackend = {
+        ...mockBackend,
+        embed: async () => [new Float32Array(4)], // Only 1 vector for 5 skills
+      };
+
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills.slice(0, 2));
+      expect(index.size).toBe(2);
+
+      (index as unknown as { backend: EmbeddingBackend }).backend = badBackend;
+      await index.build(sampleSkills);
+      expect(index.size).toBe(0);
+    });
   });
 
   describe("watch() / rebuild", () => {
@@ -388,6 +403,34 @@ describe("SkillIndex", () => {
 
       expect(childClose).toHaveBeenCalled();
       expect((index as unknown as { watchers: Map<string, unknown> }).watchers.has(childDir)).toBe(false);
+      expect((index as unknown as { watchers: Map<string, unknown> }).watchers.has(parentDir)).toBe(false);
+    });
+
+    it("removes child watcher from map on child error (allows re-watching)", async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
+      const childDir = `${TEST_SKILLS_DIR}/child-err-test`;
+      mkdirSync(childDir, { recursive: true });
+
+      try {
+        const index = new SkillIndex(mockBackend);
+        await index.build(sampleSkills);
+        index.watch(TEST_SKILLS_DIR, () => sampleSkills, { debounceMs: 10 });
+        await new Promise((r) => setTimeout(r, 100));
+
+        const watchers = (index as unknown as { watchers: Map<string, { emit: (event: string, err: Error) => void }> }).watchers;
+        const childW = watchers.get(childDir);
+        expect(childW).toBeDefined();
+
+        childW!.emit("error", new Error("child dir deleted"));
+        expect(watchers.has(childDir)).toBe(false);
+
+        index.unwatch();
+      } finally {
+        Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+        rmSync(childDir, { recursive: true, force: true });
+      }
     });
   });
 

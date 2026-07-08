@@ -65,13 +65,23 @@ export class CloudEmbedding implements EmbeddingBackend {
       throw new Error("CloudEmbedding: API response missing 'data' array");
     }
     const sorted = json.data.sort((a, b) => a.index - b.index);
-    if (sorted.length > 0 && sorted[0].embedding.length !== this.dimensions) {
-      throw new Error(
-        `CloudEmbedding: dimension mismatch — expected ${this.dimensions} but API returned ${sorted[0].embedding.length}. ` +
-        `Configure 'embedding.cloudModel' to match the model's actual output dimensions.`
-      );
+    if (sorted.length > 0) {
+      if (!Array.isArray(sorted[0].embedding)) {
+        throw new Error("CloudEmbedding: API response missing embedding array");
+      }
+      if (sorted[0].embedding.length !== this.dimensions) {
+        throw new Error(
+          `CloudEmbedding: dimension mismatch — expected ${this.dimensions} but API returned ${sorted[0].embedding.length}. ` +
+          `Configure 'embedding.cloudModel' to match the model's actual output dimensions.`
+        );
+      }
     }
-    return sorted.map((item) => new Float32Array(item.embedding));
+    return sorted.map((item) => {
+      if (!Array.isArray(item.embedding)) {
+        throw new Error("CloudEmbedding: API response missing embedding array");
+      }
+      return new Float32Array(item.embedding);
+    });
   }
 
   async embedSingle(text: string): Promise<Float32Array> {

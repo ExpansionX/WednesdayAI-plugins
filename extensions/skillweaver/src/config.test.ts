@@ -239,6 +239,16 @@ describe("validateConfig", () => {
     const config = resolveConfig({ embedding: { backend: "custom", customModel: "bge-small" } });
     expect(config.embedding.customModel).toBe("bge-small");
   });
+
+  it("rejects empty customModel for custom backend", () => {
+    const config = resolveConfig({ embedding: { backend: "custom", endpoint: "http://x", customModel: "" } });
+    expect(() => validateConfig(config)).toThrow(/customModel/);
+  });
+
+  it("rejects whitespace-only customModel for custom backend", () => {
+    const config = resolveConfig({ embedding: { backend: "custom", endpoint: "http://x", customModel: "   " } });
+    expect(() => validateConfig(config)).toThrow(/customModel/);
+  });
 });
 
 describe("checkSkillsMode", () => {

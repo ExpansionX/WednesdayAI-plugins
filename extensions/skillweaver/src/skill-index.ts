@@ -61,6 +61,10 @@ export class SkillIndex {
     const vectors = await this.backend.embed(documents);
     if (vectors.length !== names.length) {
       log.warn("embed returned mismatched count", { expected: names.length, got: vectors.length });
+      if (gen === this.buildGeneration) {
+        this.skills = new Map();
+        this.index = null;
+      }
       return;
     }
     for (let i = 0; i < names.length; i++) {
@@ -183,7 +187,7 @@ export class SkillIndex {
           const subW = watch(subDir, { persistent: false }, (_event, filename) => {
             if (filename === "SKILL.md") scheduleRebuild();
           });
-          subW.on("error", () => { /* ignore subdir errors */ });
+          subW.on("error", () => { this.watchers.delete(subDir); });
           if (this.disposed || !this.watchers.has(dir)) {
             subW.close();
             return;
@@ -207,14 +211,7 @@ export class SkillIndex {
       });
       w.on("error", (err) => {
         log.warn("watcher error", { dir, error: String(err) });
-        w.close();
-        this.watchers.delete(dir);
-        for (const [key, childW] of this.watchers) {
-          if (key !== dir && key.startsWith(dir)) {
-            childW.close();
-            this.watchers.delete(key);
-          }
-        }
+        this.unwatch();
       });
       this.watchers.set(dir, w);
 

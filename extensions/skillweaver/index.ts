@@ -36,14 +36,12 @@ function resolveBackend(config: ReturnType<typeof resolveConfig>): EmbeddingBack
   }
 }
 
-async function discoverSkills(config: ReturnType<typeof resolveConfig>, opts: { recursive?: boolean; maxDepth?: number } = {}): Promise<{ skills: SkillEntry[]; dirs: string[] }> {
+async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise<{ skills: SkillEntry[]; dirs: string[] }> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const os = await import("node:os");
   const entries: SkillEntry[] = [];
   const seenFiles = new Set<string>();
-  const recursive = opts.recursive ?? false;
-  const maxDepth = opts.maxDepth ?? 3;
 
   const dirs: string[] = [...(config.skills?.dirs ?? [])];
   if (dirs.length === 0) {
@@ -56,8 +54,7 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>, opts: { 
 
   const stripQuotes = (s: string): string => s.replace(/^["']|["']$/g, "");
 
-  async function walkDir(dir: string, depth: number): Promise<void> {
-    if (depth > maxDepth) return;
+  async function walkDir(dir: string): Promise<void> {
     let items: import("node:fs").Dirent[];
     try {
       items = await fs.readdir(dir, { withFileTypes: true });
@@ -85,12 +82,7 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>, opts: { 
       try {
         const normalized = content.replace(/^\uFEFF/, "");
         const fmMatch = normalized.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
-        if (!fmMatch) {
-          if (recursive) {
-            await walkDir(result.value.skillDir, depth + 1);
-          }
-          continue;
-        }
+        if (!fmMatch) continue;
         const fmText = fmMatch[1];
         const nameMatch = fmText.match(/^name:\s*(.+)/m);
         const descMatch = fmText.match(/^description:\s*(.+)/m);
@@ -108,7 +100,7 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>, opts: { 
   }
 
   for (const dir of dirs) {
-    await walkDir(dir, 0);
+    await walkDir(dir);
   }
 
   return { skills: entries, dirs };
