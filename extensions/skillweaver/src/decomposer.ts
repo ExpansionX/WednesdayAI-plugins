@@ -51,7 +51,12 @@ Output ONLY a JSON object with a "subTasks" key containing an array of strings:`
 }
 
 function formatHints(hints: HintEntry[]): string {
-  return hints.map((h) => `- ${h.name}: ${h.description}`).join("\n");
+  const sanitized = hints.map((h) => {
+    const name = h.name.replace(/[#*_[\]`<>]/g, "").slice(0, 100);
+    const desc = h.description.replace(/[#*_[\]`<>]/g, "").slice(0, 200);
+    return `- ${name}: ${desc}`;
+  });
+  return `<available_skills>\n${sanitized.join("\n")}\n</available_skills>`;
 }
 
 export function extractJsonArray(text: string): string[] {
@@ -72,14 +77,14 @@ export function extractJsonArray(text: string): string[] {
       return parsed;
     }
   } catch { /* fall through to substring extraction */ }
-  const arrayMatch = cleaned.match(/\[([\s\S]*?)\]/);
-  if (arrayMatch) {
+  const allMatches = [...cleaned.matchAll(/\[([\s\S]*?)\]/g)];
+  for (let i = allMatches.length - 1; i >= 0; i--) {
     try {
-      const reparsed = JSON.parse(`[${arrayMatch[1]}]`);
+      const reparsed = JSON.parse(`[${allMatches[i][1]}]`);
       if (Array.isArray(reparsed) && reparsed.every((item): item is string => typeof item === "string")) {
         return reparsed;
       }
-    } catch { /* fall through */ }
+    } catch { /* try next */ }
   }
   return [];
 }
@@ -103,8 +108,8 @@ export class Decomposer {
   async decompose(query: string, hints?: HintEntry[], maxSubTasks = 10, signal?: AbortSignal): Promise<DecompositionResult> {
     if (this.disposed) throw new Error("Decomposer: already disposed");
 
+    const hasHints = hints && hints.length > 0;
     try {
-      const hasHints = hints && hints.length > 0;
       let prompt = hasHints
         ? buildSADPass2Prompt(query, formatHints(hints))
         : buildSADPass1Prompt(query);
@@ -170,7 +175,7 @@ export class Decomposer {
       return { subTasks, pass: hasHints ? 2 : 1 };
     } catch (err) {
       log.warn("decompose failed", { error: String(err), provider: this.config.provider });
-      return { subTasks: [], pass: 1 };
+      return { subTasks: [], pass: hasHints ? 2 : 1 };
     }
   }
 

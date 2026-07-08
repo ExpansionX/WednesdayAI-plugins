@@ -119,7 +119,8 @@ export class SkillIndex {
   ): ReturnType<typeof watch> | null {
     if (this.watchers.has(dir)) return this.watchers.get(dir)!;
     try {
-      const w = watch(dir, { persistent: false, recursive: true }, (_event, filename) => {
+      const useRecursive = process.platform === "darwin" || process.platform === "win32";
+      const w = watch(dir, { persistent: false, recursive: useRecursive }, (_event, filename) => {
         if (!filename?.endsWith("SKILL.md")) return;
         if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
         this.rebuildTimer = setTimeout(async () => {
@@ -130,6 +131,10 @@ export class SkillIndex {
             log.error("rebuild failed", { error: String(err) });
           }
         }, opts.debounceMs ?? 2000);
+      });
+      w.on("error", (err) => {
+        log.warn("watcher error", { dir, error: String(err) });
+        this.watchers.delete(dir);
       });
       this.watchers.set(dir, w);
       return w;
@@ -152,6 +157,7 @@ export class SkillIndex {
   }
 
   dispose(): void {
+    this.buildGeneration++;
     this.unwatch();
     this.index = null;
     this.skills.clear();

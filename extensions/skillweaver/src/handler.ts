@@ -40,10 +40,7 @@ export function createCollectHandler(opts: HandlerOptions) {
     const timeoutMs = opts.decomposerTimeoutMs ?? 30000;
 
     try {
-      const pass1Controller = new AbortController();
-      const pass1Timer = setTimeout(() => pass1Controller.abort(), timeoutMs);
-      const pass1Result = await opts.decomposer.decompose(text, undefined, undefined, pass1Controller.signal);
-      clearTimeout(pass1Timer);
+      const pass1Result = await opts.decomposer.decompose(text, undefined, undefined, AbortSignal.timeout(timeoutMs));
       if (pass1Result.subTasks.length === 0) return {};
 
       let subTasks: string[];
@@ -52,10 +49,7 @@ export function createCollectHandler(opts: HandlerOptions) {
       if (opts.sadEnabled && pass1Result.subTasks.length > 0) {
         const hints = await opts.retriever.buildHintSet(pass1Result.subTasks);
         if (hints.length > 0) {
-          const pass2Controller = new AbortController();
-          const pass2Timer = setTimeout(() => pass2Controller.abort(), timeoutMs);
-          const pass2Result = await opts.decomposer.decompose(text, hints, undefined, pass2Controller.signal);
-          clearTimeout(pass2Timer);
+          const pass2Result = await opts.decomposer.decompose(text, hints, undefined, AbortSignal.timeout(timeoutMs));
           if (pass2Result.subTasks.length > 0) {
             subTasks = pass2Result.subTasks;
             actualPass = 2;

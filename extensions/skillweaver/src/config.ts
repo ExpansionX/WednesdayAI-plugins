@@ -69,11 +69,22 @@ export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
   const sad = { ...DEFAULTS.sad, ...rawObj(raw.sad) as Partial<SkillWeaverConfig["sad"]> };
   const rawSkills = rawObj(raw.skills);
   const rawDirs = rawSkills.dirs;
-  const dirs = Array.isArray(rawDirs) ? rawDirs.filter((d): d is string => typeof d === "string" && d.length > 0) : DEFAULTS.skills.dirs;
+  const dirs = typeof rawDirs === "string"
+    ? [rawDirs]
+    : Array.isArray(rawDirs)
+      ? rawDirs.filter((d): d is string => typeof d === "string" && d.length > 0)
+      : DEFAULTS.skills.dirs;
   const skills = { dirs };
+
+  function toBool(v: unknown, fallback: boolean): boolean {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "string") return v !== "false" && v !== "0" && v !== "";
+    return Boolean(v);
+  }
+
   return {
     ...DEFAULTS,
-    enabled: raw.enabled !== undefined ? Boolean(raw.enabled) : DEFAULTS.enabled,
+    enabled: raw.enabled !== undefined ? toBool(raw.enabled, DEFAULTS.enabled) : DEFAULTS.enabled,
     decomposer,
     embedding,
     retrieval,
@@ -89,16 +100,19 @@ export function validateConfig(config: SkillWeaverConfig): void {
   if (!VALID_BACKENDS.has(config.embedding.backend)) {
     throw new Error(`Invalid embedding backend: ${config.embedding.backend}`);
   }
-  const numericFields: Array<[string, number, number, number]> = [
-    ["topK", config.retrieval.topK, 1, 10],
-    ["hintSize", config.retrieval.hintSize, 5, 50],
-    ["minQueryLength", config.retrieval.minQueryLength, 5, 500],
-    ["temperature", config.decomposer.temperature, 0, 2],
-    ["maxTokens", config.decomposer.maxTokens, 50, 1024],
+  const numericFields: Array<[string, number, number, number, boolean]> = [
+    ["topK", config.retrieval.topK, 1, 10, true],
+    ["hintSize", config.retrieval.hintSize, 5, 50, true],
+    ["minQueryLength", config.retrieval.minQueryLength, 5, 500, true],
+    ["temperature", config.decomposer.temperature, 0, 2, false],
+    ["maxTokens", config.decomposer.maxTokens, 50, 1024, true],
   ];
-  for (const [name, value, min, max] of numericFields) {
+  for (const [name, value, min, max, isInt] of numericFields) {
     if (!Number.isFinite(value)) {
       throw new Error(`${name} must be a finite number, got ${value}`);
+    }
+    if (isInt && !Number.isInteger(value)) {
+      throw new Error(`${name} must be an integer, got ${value}`);
     }
     if (value < min || value > max) {
       throw new Error(`${name} must be ${min}-${max}, got ${value}`);

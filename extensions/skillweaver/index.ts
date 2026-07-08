@@ -10,6 +10,9 @@ import type { EmbeddingBackend, SkillEntry } from "./src/embedding/types.js";
 import { Decomposer } from "./src/decomposer.js";
 import { createRetriever } from "./src/retriever.js";
 import { createCollectHandler } from "./src/handler.js";
+import { createSubsystemLogger } from "./src/logger.js";
+
+const log = createSubsystemLogger("skillweaver");
 
 function resolveBackend(config: ReturnType<typeof resolveConfig>): EmbeddingBackend {
   switch (config.embedding.backend) {
@@ -30,7 +33,7 @@ function resolveBackend(config: ReturnType<typeof resolveConfig>): EmbeddingBack
   }
 }
 
-async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise<SkillEntry[]> {
+async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise<{ skills: SkillEntry[]; dirs: string[] }> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const os = await import("node:os");
@@ -67,12 +70,16 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
             location: skillFile,
             source: "managed",
           });
-        } catch { /* skip unreadable skill files */ }
+        } catch (err) {
+          log.warn("skipping unreadable skill file", { file: skillFile, error: String(err) });
+        }
       }
-    } catch { /* skip unreadable dirs */ }
+    } catch (err) {
+      log.warn("skipping unreadable skills dir", { dir, error: String(err) });
+    }
   }
 
-  return entries;
+  return { skills: entries, dirs };
 }
 
 const plugin = {
@@ -138,12 +145,12 @@ const plugin = {
       await Promise.resolve(backend.dispose());
     });
 
-    discoverSkills(config).then((skills) => {
+    discoverSkills(config).then(({ skills, dirs }) => {
       index.build(skills).then(() => {
-        const dirs = [...(config.skills?.dirs ?? [])];
         for (const dir of dirs) {
           index.watch(dir, async () => {
-            return await discoverSkills(config);
+            const result = await discoverSkills(config);
+            return result.skills;
           });
         }
       }).catch((err: unknown) => {

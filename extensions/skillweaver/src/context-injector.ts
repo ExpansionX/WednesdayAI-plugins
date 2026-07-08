@@ -44,7 +44,7 @@ export function formatSkillContext(
   if (subTasks.length > 0) {
     lines.push("**Sub-tasks detected:**");
     for (const task of subTasks) {
-      lines.push(`- ${task}`);
+      lines.push(`- ${sanitizeMarkdown(task)}`);
     }
   }
 
