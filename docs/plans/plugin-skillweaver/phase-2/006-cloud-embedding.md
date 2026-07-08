@@ -8,6 +8,7 @@ parallel: false
 conflicts_with: []
 files:
   - extensions/skillweaver/src/embedding/cloud.ts
+  - extensions/skillweaver/src/embedding/cloud.test.ts
 irreversible: false
 scope_test: "extensions/skillweaver/src/embedding/cloud.test.ts"
 allowed_change: create
