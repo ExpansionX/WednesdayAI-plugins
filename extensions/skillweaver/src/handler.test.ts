@@ -185,4 +185,49 @@ describe("createCollectHandler", () => {
     const result = await handler(baseEvent);
     expect(result).toEqual({});
   });
+
+  it("handles retriever search failure gracefully", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({
+      subTasks: ["task1"], hints: [], pass: 1,
+    });
+    mockRetriever.retrieve.mockRejectedValueOnce(new Error("index corrupt"));
+    mockFormatSkillContext.mockReturnValueOnce({});
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    const result = await handler(baseEvent);
+    expect(result).toEqual({});
+  });
+
+  it("handles null/undefined cleanUserMessage", async () => {
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: true,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    const result = await handler({ ...baseEvent, cleanUserMessage: undefined as never });
+    expect(result).toEqual({});
+  });
+
+  it("does not crash on malformed envelope", async () => {
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: true,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    const result = await handler({ ...baseEvent, envelope: null as never });
+    expect(result).toEqual({});
+  });
 });

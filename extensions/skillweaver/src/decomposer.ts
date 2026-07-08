@@ -93,7 +93,7 @@ export class Decomposer {
     };
   }
 
-  async decompose(query: string, hints?: HintEntry[], maxSubTasks = 10): Promise<DecompositionResult> {
+  async decompose(query: string, hints?: HintEntry[], maxSubTasks = 10, signal?: AbortSignal): Promise<DecompositionResult> {
     if (this.disposed) throw new Error("Decomposer: already disposed");
 
     try {
@@ -138,7 +138,7 @@ export class Decomposer {
         });
       }
 
-      const response = await this.config.fetchRaw(endpoint, { method: "POST", headers, body });
+      const response = await this.config.fetchRaw(endpoint, { method: "POST", headers, body, ...(signal ? { signal } : {}) });
 
       if (!response.ok) {
         throw new Error(`Decomposer: request failed ${response.status}`);

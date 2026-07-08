@@ -25,6 +25,7 @@ export interface HandlerOptions {
   minQueryLength: number;
   decomposerModel: string;
   enabled?: boolean;
+  decomposerTimeoutMs?: number;
 }
 
 export function createCollectHandler(opts: HandlerOptions) {
@@ -32,12 +33,17 @@ export function createCollectHandler(opts: HandlerOptions) {
     if (opts.enabled === false) return {};
 
     const text = event.cleanUserMessage?.text ?? "";
-    if (text.length < opts.minQueryLength) return {};
+    if (!text || text.length < opts.minQueryLength) return {};
 
-    if (event.envelope?.["isSubAgent"]) return {};
+    if (event.envelope && typeof event.envelope === "object" && (event.envelope as Record<string, unknown>)["isSubAgent"]) return {};
+
+    const abortController = new AbortController();
+    const timeoutMs = opts.decomposerTimeoutMs ?? 30000;
+    const timer = setTimeout(() => abortController.abort(), timeoutMs);
 
     try {
-      const pass1Result = await opts.decomposer.decompose(text);
+      const pass1Result = await opts.decomposer.decompose(text, undefined, undefined, abortController.signal);
+      clearTimeout(timer);
       if (pass1Result.subTasks.length === 0) return {};
 
       let subTasks: string[];
@@ -45,7 +51,7 @@ export function createCollectHandler(opts: HandlerOptions) {
       if (opts.sadEnabled && pass1Result.subTasks.length > 0) {
         const hints = await opts.retriever.buildHintSet(pass1Result.subTasks);
         if (hints.length > 0) {
-          const pass2Result = await opts.decomposer.decompose(text, hints);
+          const pass2Result = await opts.decomposer.decompose(text, hints, undefined, abortController.signal);
           subTasks = pass2Result.subTasks.length > 0 ? pass2Result.subTasks : pass1Result.subTasks;
         } else {
           subTasks = pass1Result.subTasks;
@@ -66,8 +72,8 @@ export function createCollectHandler(opts: HandlerOptions) {
       }
 
       return contribution as CollectResult;
-    } catch (err) {
-      log.error("handler error", { error: String(err) });
+    } catch {
+      clearTimeout(timer);
       return {};
     }
   };
