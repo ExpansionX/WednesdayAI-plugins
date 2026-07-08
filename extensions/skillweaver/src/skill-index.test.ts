@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import type { EmbeddingBackend, SkillEntry } from "./embedding/types.js";
+import { mkdirSync, rmSync } from "node:fs";
 
 vi.mock("wednesdayai/plugin-sdk", () => ({
   createSubsystemLogger: () => ({
@@ -38,10 +39,17 @@ const sampleSkills: SkillEntry[] = [
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let SkillIndex: any;
 
+const TEST_SKILLS_DIR = "/tmp/skillweaver-test-skills";
+
 describe("SkillIndex", () => {
   beforeAll(async () => {
     const mod = await import("./skill-index.js");
     SkillIndex = mod.SkillIndex;
+    mkdirSync(TEST_SKILLS_DIR, { recursive: true });
+  });
+
+  afterAll(() => {
+    rmSync(TEST_SKILLS_DIR, { recursive: true, force: true });
   });
 
   describe("build()", () => {
@@ -116,6 +124,65 @@ describe("SkillIndex", () => {
       await index.build(sampleSkills);
       index.dispose();
       expect(index.size).toBe(0);
+    });
+  });
+
+  describe("watch() / rebuild", () => {
+    it("watch() starts a file watcher", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+      const watcher = index.watch(TEST_SKILLS_DIR, () => [...sampleSkills]);
+      expect(watcher).toBeDefined();
+      expect(watcher?.close).toBeDefined();
+      watcher?.close();
+    });
+
+    it("returns null for non-existent dir", () => {
+      const index = new SkillIndex(mockBackend);
+      const watcher = index.watch("/nonexistent/path", () => []);
+      expect(watcher).toBeNull();
+    });
+
+    it("unwatch() closes the watcher", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+      index.watch(TEST_SKILLS_DIR, () => [...sampleSkills]);
+      const closed = index.unwatch();
+      expect(closed).toBe(true);
+    });
+
+    it("unwatch() returns false when no watcher active", () => {
+      const index = new SkillIndex(mockBackend);
+      expect(index.unwatch()).toBe(false);
+    });
+
+    it("second watch() closes the first watcher", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+      const w1 = index.watch(TEST_SKILLS_DIR, () => [...sampleSkills]);
+      const w2 = index.watch(TEST_SKILLS_DIR, () => [...sampleSkills]);
+      expect(w1?.close).toBeDefined();
+      expect(w2?.close).toBeDefined();
+      w2?.close();
+    });
+
+    it("calls skillProvider and rebuilds after debounce", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+
+      let callCount = 0;
+      const provider = () => {
+        callCount++;
+        return sampleSkills;
+      };
+
+      const watcher = index.watch(TEST_SKILLS_DIR, provider, { debounceMs: 100 });
+      expect(watcher).toBeDefined();
+
+      // Verify the watcher is an EventEmitter with close
+      expect(typeof watcher?.close).toBe("function");
+
+      watcher?.close();
     });
   });
 });

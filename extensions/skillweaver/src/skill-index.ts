@@ -1,13 +1,21 @@
 // @ts-expect-error — plugin-sdk not installed in this workspace
 import { createSubsystemLogger } from "wednesdayai/plugin-sdk";
+import { watch } from "node:fs";
 import type { EmbeddingBackend, SkillEntry, SearchResult, IndexedSkill } from "./embedding/types.js";
 
 const log = createSubsystemLogger("skillweaver/index");
+
+export interface WatchOptions {
+  debounceMs?: number;
+}
 
 export class SkillIndex {
   private backend: EmbeddingBackend;
   private skills = new Map<string, IndexedSkill>();
   private index: Awaited<ReturnType<typeof this.createHnsw>> | null = null;
+  private watcher: ReturnType<typeof watch> | null = null;
+  private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchDir: string | null = null;
 
   constructor(backend: EmbeddingBackend) {
     this.backend = backend;
@@ -90,7 +98,49 @@ export class SkillIndex {
     return entry;
   }
 
+  watch(
+    dir: string,
+    skillProvider: () => SkillEntry[],
+    opts: WatchOptions = {},
+  ): ReturnType<typeof watch> | null {
+    this.unwatch();
+    try {
+      const w = watch(dir, { persistent: false, recursive: true }, (_event, filename) => {
+        if (!filename?.endsWith(".md")) return;
+        if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
+        this.rebuildTimer = setTimeout(async () => {
+          try {
+            const entries = skillProvider();
+            await this.build(entries);
+          } catch (err) {
+            log.error("rebuild failed", { error: String(err) });
+          }
+        }, opts.debounceMs ?? 2000);
+      });
+      this.watcher = w;
+      this.watchDir = dir;
+      return w;
+    } catch {
+      return null;
+    }
+  }
+
+  unwatch(): boolean {
+    if (this.rebuildTimer) {
+      clearTimeout(this.rebuildTimer);
+      this.rebuildTimer = null;
+    }
+    if (this.watcher) {
+      this.watcher.close();
+      this.watcher = null;
+      this.watchDir = null;
+      return true;
+    }
+    return false;
+  }
+
   dispose(): void {
+    this.unwatch();
     this.index = null;
     this.skills.clear();
   }
