@@ -18,10 +18,15 @@ describe("CloudEmbedding", () => {
     mockFetch.mockReset();
   });
 
-  it("has id 'cloud' and dimensions 1536", () => {
+  it("defaults to id 'cloud' and 1536 dimensions", () => {
     const backend = new CloudEmbedding({ apiKey: "sk-test" });
     expect(backend.id).toBe("cloud");
     expect(backend.dimensions).toBe(1536);
+  });
+
+  it("supports configurable dimensions for different cloud models", () => {
+    const backend = new CloudEmbedding({ apiKey: "sk-test", model: "text-embedding-3-large", dimensions: 3072 });
+    expect(backend.dimensions).toBe(3072);
   });
 
   it("sends correct OpenAI embeddings request", async () => {

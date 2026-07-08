@@ -27,11 +27,11 @@
             "description": "Model used for query decomposition."
           },
           "apiKey": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "API key override. If null, uses agent's provider credentials."
           },
           "baseUrl": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "Base URL for openai-compatible endpoints."
           },
           "temperature": {
@@ -73,18 +73,24 @@
             "default": "custom",
             "description": "Model name sent to the custom backend endpoint."
           },
+          "cloudDimensions": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 4096,
+            "description": "Vector dimensions for the cloud (OpenAI) backend. If null, defaults to 1536."
+          },
           "customDimensions": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "minimum": 1,
             "maximum": 4096,
             "description": "Vector dimensions for the custom backend. If null, defaults to 384."
           },
           "endpoint": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "OpenAI-compatible endpoint URL for the custom backend."
           },
           "apiKey": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "API key for the custom backend."
           }
         }
@@ -113,6 +119,13 @@
             "minimum": 5,
             "maximum": 500,
             "description": "Skip routing for queries shorter than this."
+          },
+          "retrievalTimeoutMs": {
+            "type": "integer",
+            "default": 30000,
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "Maximum milliseconds the retrieval step may run before being aborted."
           }
         }
       },

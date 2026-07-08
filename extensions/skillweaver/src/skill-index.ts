@@ -24,6 +24,7 @@ export class SkillIndex {
   private watchers = new Map<string, ReturnType<typeof watch>>();
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private buildGeneration = 0;
+  private rebuilding = false;
   private disposed = false;
 
   constructor(backend: EmbeddingBackend) {
@@ -143,11 +144,15 @@ export class SkillIndex {
     const scheduleRebuild = () => {
       if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
       this.rebuildTimer = setTimeout(async () => {
+        if (this.rebuilding) return;
+        this.rebuilding = true;
         try {
           const entries = await skillProvider();
           await this.build(entries);
         } catch (err) {
           log.error("rebuild failed", { error: String(err) });
+        } finally {
+          this.rebuilding = false;
         }
       }, opts.debounceMs ?? 2000);
     };
@@ -162,6 +167,12 @@ export class SkillIndex {
         log.warn("watcher error", { dir, error: String(err) });
         w.close();
         this.watchers.delete(dir);
+        for (const [key, childW] of this.watchers) {
+          if (key !== dir && key.startsWith(dir)) {
+            childW.close();
+            this.watchers.delete(key);
+          }
+        }
       });
       this.watchers.set(dir, w);
 
@@ -191,6 +202,7 @@ export class SkillIndex {
       clearTimeout(this.rebuildTimer);
       this.rebuildTimer = null;
     }
+    this.rebuilding = false;
     if (this.watchers.size > 0) {
       for (const w of this.watchers.values()) w.close();
       this.watchers.clear();

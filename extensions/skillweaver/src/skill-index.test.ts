@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import type { EmbeddingBackend, SkillEntry } from "./embedding/types.js";
 import { mkdirSync, rmSync } from "node:fs";
 
@@ -232,11 +232,7 @@ describe("SkillIndex", () => {
       const index = new SkillIndex(mockBackend);
       await index.build(sampleSkills);
 
-      let callCount = 0;
-      const provider = () => {
-        callCount++;
-        return sampleSkills;
-      };
+      const provider = () => sampleSkills;
 
       const watcher = index.watch(TEST_SKILLS_DIR, provider, { debounceMs: 100 });
       expect(watcher).toBeDefined();
@@ -273,6 +269,30 @@ describe("SkillIndex", () => {
       // Wait — provider should NOT have been called since timer was cleared
       await new Promise((r) => setTimeout(r, 100));
       expect(callCount).toBe(0);
+    });
+
+    it("does not start rebuild after unwatch() even if timer fires", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+
+      let rebuildCount = 0;
+      const provider = () => {
+        rebuildCount++;
+        return sampleSkills;
+      };
+
+      const watcher = index.watch(TEST_SKILLS_DIR, provider, { debounceMs: 50 });
+      expect(watcher).not.toBeNull();
+
+      // Trigger a rebuild
+      watcher!.emit("change", "rename", "SKILL.md");
+
+      // Unwatch immediately — clears the timer
+      index.unwatch();
+
+      // Wait for what would have been the debounce period
+      await new Promise((r) => setTimeout(r, 150));
+      expect(rebuildCount).toBe(0);
     });
   });
 
@@ -333,6 +353,28 @@ describe("SkillIndex", () => {
       const results = await searchPromise;
       expect(results).toBeDefined();
       expect(Array.isArray(results)).toBe(true);
+    });
+  });
+
+  describe("child watcher cleanup on parent error", () => {
+    it("closes child watchers when parent watcher errors", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+
+      const parentDir = TEST_SKILLS_DIR;
+      const childDir = `${parentDir}/child-skill`;
+
+      const parentWatcher = index.watch(parentDir, () => sampleSkills);
+      expect(parentWatcher).not.toBeNull();
+
+      const childClose = vi.fn();
+      const mockChildWatcher = { close: childClose, on: vi.fn() } as unknown as ReturnType<typeof import("node:fs").watch>;
+      (index as unknown as { watchers: Map<string, unknown> }).watchers.set(childDir, mockChildWatcher);
+
+      parentWatcher!.emit("error", new Error("watcher failed"));
+
+      expect(childClose).toHaveBeenCalled();
+      expect((index as unknown as { watchers: Map<string, unknown> }).watchers.has(childDir)).toBe(false);
     });
   });
 });

@@ -4,8 +4,8 @@ import { resolveConfig, checkSkillsMode, validateConfig } from "./config.js";
 const defaults = {
   enabled: true,
   decomposer: { provider: "openrouter", model: "qwen/qwen2.5-7b-instruct", temperature: 0.1, maxTokens: 256 },
-  embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small", customModel: "custom", customDimensions: null },
-  retrieval: { topK: 3, hintSize: 15, minQueryLength: 20 },
+  embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small", cloudDimensions: null, customModel: "custom", customDimensions: null },
+  retrieval: { topK: 3, hintSize: 15, minQueryLength: 20, retrievalTimeoutMs: 30000 },
   sad: { enabled: true },
   skills: { dirs: [] },
 } as const;
@@ -158,6 +158,26 @@ describe("validateConfig", () => {
     expect(() => validateConfig(config)).toThrow(/maxTokens/);
   });
 
+  it("rejects out-of-range retrievalTimeoutMs", () => {
+    const config = resolveConfig({ retrieval: { retrievalTimeoutMs: 50 } });
+    expect(() => validateConfig(config)).toThrow(/retrievalTimeoutMs/);
+  });
+
+  it("rejects non-integer cloudDimensions", () => {
+    const config = resolveConfig({ embedding: { backend: "cloud", cloudModel: "text-embedding-3-small", cloudDimensions: 128.5 } });
+    expect(() => validateConfig(config)).toThrow(/cloudDimensions/);
+  });
+
+  it("rejects out-of-range cloudDimensions", () => {
+    const config = resolveConfig({ embedding: { backend: "cloud", cloudModel: "text-embedding-3-small", cloudDimensions: 9999 } });
+    expect(() => validateConfig(config)).toThrow(/cloudDimensions/);
+  });
+
+  it("accepts valid cloudDimensions", () => {
+    const config = resolveConfig({ embedding: { backend: "cloud", cloudModel: "text-embedding-3-large", cloudDimensions: 3072 } });
+    expect(() => validateConfig(config)).not.toThrow();
+  });
+
   it("rejects empty decomposer.model", () => {
     const config = resolveConfig({ decomposer: { model: "" } });
     expect(() => validateConfig(config)).toThrow(/decomposer\.model/);
@@ -191,6 +211,12 @@ describe("validateConfig", () => {
   it("accepts valid customDimensions", () => {
     const config = resolveConfig({ embedding: { backend: "custom", endpoint: "http://x", customDimensions: 768 } });
     expect(() => validateConfig(config)).not.toThrow();
+  });
+
+  it("accepts null cloudDimensions (uses default)", () => {
+    const config = resolveConfig({ embedding: { backend: "cloud", cloudModel: "text-embedding-3-small" } });
+    expect(() => validateConfig(config)).not.toThrow();
+    expect(config.embedding.cloudDimensions).toBeNull();
   });
 
   it("accepts null customDimensions (uses default)", () => {

@@ -293,4 +293,48 @@ describe("createCollectHandler", () => {
     const result = await handler({ ...baseEvent, envelope: null as never });
     expect(result).toEqual({});
   });
+
+  it("shares a single timeout budget across both SAD passes", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    mockDecomposer.decompose.mockImplementation(async (_q: string, _h: unknown, _m: unknown, signal?: AbortSignal) => {
+      capturedSignal = signal;
+      return { subTasks: ["task1"], hints: [], pass: 1 };
+    });
+    mockRetriever.buildHintSet.mockResolvedValue([{ name: "github", description: "Git" }]);
+    mockRetriever.retrieve.mockResolvedValue([]);
+    mockFormatSkillContext.mockReturnValueOnce({ prependContext: [] });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: true,
+      minQueryLength: 5,
+      decomposerModel: "test",
+      decomposerTimeoutMs: 5000,
+    });
+
+    await handler(baseEvent);
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(mockDecomposer.decompose).toHaveBeenCalledTimes(2);
+    const pass1Signal = mockDecomposer.decompose.mock.calls[0][3];
+    const pass2Signal = mockDecomposer.decompose.mock.calls[1][3];
+    expect(pass1Signal).toBe(pass2Signal);
+  });
+
+  it("clears timeout on early return (empty subtasks)", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 5,
+      decomposerModel: "test",
+      decomposerTimeoutMs: 100,
+    });
+
+    const result = await handler(baseEvent);
+    expect(result).toEqual({});
+  });
 });

@@ -4,7 +4,7 @@ const mockBackend = {
   id: "test",
   dimensions: 384,
   embed: async (texts: string[]) => texts.map(() => new Float32Array(384)),
-  embedSingle: async (text: string) => new Float32Array(384),
+  embedSingle: async (_text: string) => new Float32Array(384),
   dispose: () => {},
 };
 

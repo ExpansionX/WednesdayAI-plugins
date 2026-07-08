@@ -4,8 +4,16 @@
   "private": true,
   "description": "SkillWeaver — compositional skill routing for WednesdayAI via context.collect hook",
   "type": "module",
-  "main": "./index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "openclaw.plugin.json"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -17,6 +25,9 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0",
     "vitest": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "openclaw": {
     "extensions": [

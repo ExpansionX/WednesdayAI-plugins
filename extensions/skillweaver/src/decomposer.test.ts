@@ -298,6 +298,25 @@ describe("Decomposer", () => {
       const result = await decomposer.decompose("query");
       expect(result.subTasks).toEqual([]);
     });
+
+    it("handles malformed Anthropic response (missing content array)", async () => {
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ error: { message: "overloaded" } }),
+      });
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "anthropic",
+        model: "claude-haiku",
+        apiKey: "sk-ant-test",
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual([]);
+      expect(result.errors).toBeDefined();
+      expect(result.errors![0].type).toBe("parse");
+    });
   });
 
   describe("HTTP error responses", () => {
@@ -336,6 +355,25 @@ describe("Decomposer", () => {
       const result = await decomposer.decompose("query");
       expect(result.subTasks).toEqual([]);
     });
+
+    it("handles malformed OpenAI response (missing choices)", async () => {
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ error: { message: "model not found" } }),
+      });
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openrouter",
+        model: "test",
+        apiKey: "sk-test",
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual([]);
+      expect(result.errors).toBeDefined();
+      expect(result.errors![0].type).toBe("parse");
+    });
   });
 
   describe("classifyError paths", () => {
@@ -351,6 +389,36 @@ describe("Decomposer", () => {
 
       const result = await decomposer.decompose("query");
       expect(result.subTasks).toEqual([]);
+      expect(result.errors).toBeDefined();
+      expect(result.errors![0].type).toBe("network");
+    });
+
+    it("classifies TypeError with 'ECONNREFUSED' as network error", async () => {
+      mockFetchRaw.mockRejectedValueOnce(new TypeError("connect ECONNREFUSED 127.0.0.1:8080"));
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openrouter",
+        model: "test",
+        apiKey: "sk-test",
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.errors).toBeDefined();
+      expect(result.errors![0].type).toBe("network");
+    });
+
+    it("classifies TypeError with 'terminated' as network error", async () => {
+      mockFetchRaw.mockRejectedValueOnce(new TypeError("terminated"));
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openrouter",
+        model: "test",
+        apiKey: "sk-test",
+      });
+
+      const result = await decomposer.decompose("query");
       expect(result.errors).toBeDefined();
       expect(result.errors![0].type).toBe("network");
     });
@@ -442,6 +510,12 @@ describe("Decomposer", () => {
       const result = extractJsonArray(text);
       // Should only parse the last 50 matches
       expect(result.length).toBeLessThanOrEqual(3); // last match has 3 items
+    });
+
+    it("handles nested brackets inside string content", () => {
+      // String with inner brackets that should not break parsing
+      const result = extractJsonArray('["task [with] brackets", "other task"]');
+      expect(result).toEqual(["task [with] brackets", "other task"]);
     });
   });
 

@@ -29,6 +29,9 @@ export class CustomEmbedding implements EmbeddingBackend {
     this.dimensions = opts.dimensions ?? 384;
     this.model = opts.model ?? "custom";
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (!this.apiKey) {
+      console.warn("[WARN] [skillweaver/custom] No API key configured for custom endpoint. Set 'embedding.apiKey' if your endpoint requires authentication.");
+    }
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {

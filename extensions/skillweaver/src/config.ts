@@ -12,6 +12,7 @@ export interface SkillWeaverConfig {
     backend: "local" | "cloud" | "custom";
     model: string;
     cloudModel: string;
+    cloudDimensions?: number | null;
     customModel: string;
     customDimensions?: number | null;
     endpoint?: string | null;
@@ -21,6 +22,7 @@ export interface SkillWeaverConfig {
     topK: number;
     hintSize: number;
     minQueryLength: number;
+    retrievalTimeoutMs: number;
   };
   sad: {
     enabled: boolean;
@@ -42,6 +44,7 @@ const DEFAULTS = {
     backend: "local" as const,
     model: "all-MiniLM-L6-v2",
     cloudModel: "text-embedding-3-small",
+    cloudDimensions: null,
     customModel: "custom",
     customDimensions: null,
   },
@@ -49,6 +52,7 @@ const DEFAULTS = {
     topK: 3,
     hintSize: 15,
     minQueryLength: 20,
+    retrievalTimeoutMs: 30000,
   },
   sad: {
     enabled: true,
@@ -112,6 +116,7 @@ export function validateConfig(config: SkillWeaverConfig): void {
     ["minQueryLength", config.retrieval.minQueryLength, 5, 500, true],
     ["temperature", config.decomposer.temperature, 0, 2, false],
     ["maxTokens", config.decomposer.maxTokens, 50, 1024, true],
+    ["retrievalTimeoutMs", config.retrieval.retrievalTimeoutMs, 1000, 300000, true],
   ];
   for (const [name, value, min, max, isInt] of numericFields) {
     if (!Number.isFinite(value)) {
@@ -139,14 +144,20 @@ export function validateConfig(config: SkillWeaverConfig): void {
   if (config.embedding.backend === "cloud" && (!config.embedding.cloudModel || config.embedding.cloudModel.trim() === "")) {
     throw new Error("embedding.cloudModel must be a non-empty string when backend is 'cloud'");
   }
-  if (config.embedding.backend === "custom") {
-    if (config.embedding.customDimensions != null) {
-      if (!Number.isFinite(config.embedding.customDimensions) || !Number.isInteger(config.embedding.customDimensions)) {
-        throw new Error("embedding.customDimensions must be a finite integer");
-      }
-      if (config.embedding.customDimensions < 1 || config.embedding.customDimensions > 4096) {
-        throw new Error(`embedding.customDimensions must be 1-4096, got ${config.embedding.customDimensions}`);
-      }
+  if (config.embedding.backend === "cloud" && config.embedding.cloudDimensions != null) {
+    if (!Number.isFinite(config.embedding.cloudDimensions) || !Number.isInteger(config.embedding.cloudDimensions)) {
+      throw new Error("embedding.cloudDimensions must be a finite integer");
+    }
+    if (config.embedding.cloudDimensions < 1 || config.embedding.cloudDimensions > 4096) {
+      throw new Error(`embedding.cloudDimensions must be 1-4096, got ${config.embedding.cloudDimensions}`);
+    }
+  }
+  if (config.embedding.backend === "custom" && config.embedding.customDimensions != null) {
+    if (!Number.isFinite(config.embedding.customDimensions) || !Number.isInteger(config.embedding.customDimensions)) {
+      throw new Error("embedding.customDimensions must be a finite integer");
+    }
+    if (config.embedding.customDimensions < 1 || config.embedding.customDimensions > 4096) {
+      throw new Error(`embedding.customDimensions must be 1-4096, got ${config.embedding.customDimensions}`);
     }
   }
 }

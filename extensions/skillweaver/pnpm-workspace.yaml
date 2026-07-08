@@ -1,2 +1,4 @@
 allowBuilds:
   hnswlib-node: true
+  protobufjs: false
+  sharp: false

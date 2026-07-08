@@ -67,11 +67,14 @@ Output ONLY a JSON object with a "subTasks" key containing an array of strings:`
 }
 
 function formatHints(hints: HintEntry[]): string {
-  const sanitized = hints.map((h) => {
-    const name = h.name.replace(/[#*_[\]`<>]/g, "").replace(/\n+/g, " ").slice(0, 100);
-    const desc = h.description.replace(/[#*_[\]`<>]/g, "").replace(/\n+/g, " ").slice(0, 200);
-    return `- ${name}: ${desc}`;
-  });
+  const sanitized = hints
+    .map((h) => {
+      const name = h.name.replace(/[#*_[\]`<>\\]/g, "").replace(/\n+/g, " ").slice(0, 100);
+      const desc = h.description.replace(/[#*_[\]`<>\\]/g, "").replace(/\n+/g, " ").slice(0, 200);
+      if (!name) return null;
+      return `- ${name}: ${desc || name}`;
+    })
+    .filter((s): s is string => s !== null);
   return `<available_skills>\n${sanitized.join("\n")}\n</available_skills>`;
 }
 
@@ -80,7 +83,7 @@ function classifyError(err: unknown, statusCode?: number): DecompositionError {
   if (statusCode === 401 || statusCode === 403) return { type: "auth", message, statusCode };
   if (statusCode === 429) return { type: "rate_limit", message, statusCode };
   if (err instanceof DOMException && err.name === "AbortError") return { type: "timeout", message: "request timed out" };
-  if (err instanceof TypeError && err.message.includes("fetch")) return { type: "network", message };
+  if (err instanceof TypeError && (err.message.includes("fetch") || err.message.includes("network") || err.message.includes("terminated") || err.message.includes("ECONNREFUSED") || err.message.includes("ECONNRESET") || err.message.includes("ETIMEDOUT"))) return { type: "network", message };
   return { type: "unknown", message };
 }
 
@@ -103,7 +106,7 @@ export function extractJsonArray(text: string): string[] {
       return parsed;
     }
   } catch { /* fall through to substring extraction */ }
-  const allMatches = [...cleaned.matchAll(/\[([\s\S]*?)\]/g)].slice(-50);
+  const allMatches = [...cleaned.matchAll(/\[((?:[^[\]]|\[[^\]]*\])*)\]/g)].slice(-50);
   for (let i = allMatches.length - 1; i >= 0; i--) {
     try {
       const reparsed = JSON.parse(`[${allMatches[i][1]}]`);
@@ -190,11 +193,17 @@ export class Decomposer {
 
       let content: string;
       if (isAnthropic) {
-        const contentArr = json.content as Array<{ text: string }>;
-        content = contentArr?.[0]?.text ?? "";
+        const contentArr = json.content;
+        if (!Array.isArray(contentArr) || contentArr.length === 0) {
+          return { subTasks: [], pass: hasHints ? 2 : 1, errors: [{ type: "parse", message: "Anthropic response missing content array" }] };
+        }
+        content = (contentArr[0] as { text?: string })?.text ?? "";
       } else {
-        const choices = json.choices as Array<{ message: { content: string } }>;
-        content = choices?.[0]?.message?.content ?? "";
+        const choices = json.choices;
+        if (!Array.isArray(choices) || choices.length === 0) {
+          return { subTasks: [], pass: hasHints ? 2 : 1, errors: [{ type: "parse", message: "LLM response missing choices array" }] };
+        }
+        content = ((choices[0] as { message?: { content?: string } })?.message?.content) ?? "";
       }
 
       let subTasks = extractJsonArray(content);

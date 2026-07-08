@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 import type { SkillIndex } from "./skill-index.js";
-import type { SearchResult, HintEntry } from "./embedding/types.js";
+import type { SearchResult } from "./embedding/types.js";
 
 const mockSearch = vi.fn();
 const mockIndex = { search: mockSearch } as unknown as SkillIndex;

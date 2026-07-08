@@ -22,6 +22,7 @@ function resolveBackend(config: ReturnType<typeof resolveConfig>): EmbeddingBack
       return new CloudEmbedding({
         apiKey: config.embedding.apiKey,
         model: config.embedding.cloudModel,
+        dimensions: config.embedding.cloudDimensions ?? undefined,
       });
     case "custom":
       return new CustomEmbedding({
@@ -55,11 +56,18 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
   for (const dir of dirs) {
     try {
       const items = await fs.readdir(dir, { withFileTypes: true });
-      for (const item of items) {
-        if (!item.isDirectory()) continue;
-        const skillFile = path.join(dir, item.name, "SKILL.md");
-        try {
+      const skillDirs = items.filter((item) => item.isDirectory());
+      const results = await Promise.allSettled(
+        skillDirs.map(async (item) => {
+          const skillFile = path.join(dir, item.name, "SKILL.md");
           const content = await fs.readFile(skillFile, "utf-8");
+          return { content, skillFile };
+        }),
+      );
+      for (const result of results) {
+        if (result.status === "rejected") continue;
+        try {
+          const { content, skillFile } = result.value;
           const normalized = content.replace(/^\uFEFF/, "");
           const fmMatch = normalized.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
           if (!fmMatch) continue;
@@ -74,7 +82,7 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
             source: "managed",
           });
         } catch (err) {
-          log.warn("skipping unreadable skill file", { file: skillFile, error: String(err) });
+          log.warn("skipping unreadable skill file", { error: String(err) });
         }
       }
     } catch (err) {
@@ -135,16 +143,22 @@ const plugin = {
       sadEnabled: config.sad.enabled,
       minQueryLength: config.retrieval.minQueryLength,
       decomposerModel: config.decomposer.model,
+      retrievalTimeoutMs: config.retrieval.retrievalTimeoutMs,
     });
 
     api.on("context.collect", handler);
 
     let disposed = false;
+    let initPromise: Promise<void> | null = null;
+
     api.on("gateway_stop", async () => {
       if (disposed) return;
       disposed = true;
       decomposer.dispose();
       index.dispose();
+      if (initPromise) {
+        await initPromise.catch(() => {});
+      }
       try {
         await backend.dispose();
       } catch (err) {
@@ -152,20 +166,22 @@ const plugin = {
       }
     });
 
-    discoverSkills(config).then(({ skills, dirs }) => {
-      index.build(skills).then(() => {
+    initPromise = discoverSkills(config)
+      .then(({ skills, dirs }) => index.build(skills).then(() => {
+        if (disposed) return;
         for (const dir of dirs) {
           index.watch(dir, async () => {
             const result = await discoverSkills(config);
             return result.skills;
           });
         }
-      }).catch((err: unknown) => {
-        api.logger.warn("skillweaver: initial index build failed", { error: String(err) });
-      });
-    }).catch((err: unknown) => {
-      api.logger.warn("skillweaver: skill discovery failed", { error: String(err) });
-    });
+      }))
+      .catch((err: unknown) => {
+        if (!disposed) {
+          api.logger.warn("skillweaver: initialization failed", { error: String(err) });
+        }
+      })
+      .then(() => { initPromise = null; });
 
     api.logger.info("skillweaver: registered");
   },
