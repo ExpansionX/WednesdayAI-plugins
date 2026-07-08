@@ -8,6 +8,7 @@ parallel: false
 conflicts_with: []
 files:
   - extensions/skillweaver/src/embedding/local.ts
+  - extensions/skillweaver/src/embedding/local.test.ts
 irreversible: false
 scope_test: "extensions/skillweaver/src/embedding/local.test.ts"
 allowed_change: create
