@@ -10,7 +10,7 @@ describe("formatSkillContext", () => {
   });
 
   it("returns empty contribution for empty skills array", () => {
-    const result = formatSkillContext([], "test query", []);
+    const result = formatSkillContext([], []);
     expect(result).toEqual({});
   });
 
@@ -20,7 +20,6 @@ describe("formatSkillContext", () => {
         { name: "github", description: "Git operations", location: "/skills/github/SKILL.md", source: "bundled", score: 0.95 },
         { name: "slack", description: "Slack messaging", location: "/skills/slack/SKILL.md", source: "bundled", score: 0.88 },
       ],
-      "create a PR and notify slack",
       ["create PR", "notify slack"],
     );
 
@@ -43,7 +42,6 @@ describe("formatSkillContext", () => {
   it("includes decomposer model in metadata", () => {
     const result = formatSkillContext(
       [{ name: "github", description: "Git", location: "/x", source: "bundled", score: 0.9 }],
-      "query",
       ["task"],
       "qwen/qwen2.5-7b-instruct",
     );
@@ -56,7 +54,6 @@ describe("formatSkillContext", () => {
       [
         { name: "github", description: "Git operations via gh CLI", location: "/skills/github/SKILL.md", source: "bundled", score: 0.9 },
       ],
-      "query",
       ["task"],
     );
 
@@ -75,8 +72,37 @@ describe("formatSkillContext", () => {
       score: 0.9 - i * 0.01,
     }));
 
-    const result = formatSkillContext(skills, "complex query", tasks);
+    const result = formatSkillContext(skills, tasks);
     expect(result.prependContext![0].metadata!.subTasks).toHaveLength(10);
     expect(result.prependContext![0].metadata!.matchedSkills).toHaveLength(10);
+  });
+
+  it("truncates long skill descriptions and appends ellipsis", () => {
+    const longName = "x".repeat(300);
+    const result = formatSkillContext(
+      [{ name: longName, description: "desc", location: "/x", source: "bundled", score: 0.9 }],
+      ["task"],
+    );
+    const text = result.prependContext![0].text;
+    expect(text).toContain("\u2026");
+  });
+
+  it("escapes markdown special characters in skill names", () => {
+    const result = formatSkillContext(
+      [{ name: "evil**name", description: "desc", location: "/x", source: "bundled", score: 0.9 }],
+      ["task"],
+    );
+    const text = result.prependContext![0].text;
+    expect(text).toContain("\\*\\*");
+    expect(text).not.toContain("evil**name");
+  });
+
+  it("does not truncate short text", () => {
+    const result = formatSkillContext(
+      [{ name: "short", description: "brief", location: "/x", source: "bundled", score: 0.9 }],
+      ["task"],
+    );
+    const text = result.prependContext![0].text;
+    expect(text).not.toContain("\u2026");
   });
 });

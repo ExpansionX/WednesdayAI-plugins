@@ -101,4 +101,31 @@ describe("CloudEmbedding", () => {
     const backend = new CloudEmbedding({ apiKey: "bad-key" });
     await expect(backend.embed(["test"])).rejects.toThrow(/401/);
   });
+
+  it("throws descriptive error when response has no data array", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ error: "something went wrong" }),
+    });
+
+    const backend = new CloudEmbedding({ apiKey: "sk-test" });
+    await expect(backend.embed(["test"])).rejects.toThrow(/missing 'data'/);
+  });
+
+  it("passes an AbortSignal to fetch for timeout", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: Array(1536).fill(0.1), index: 0 }],
+      }),
+    });
+
+    const backend = new CloudEmbedding({ apiKey: "sk-test", timeoutMs: 5000 });
+    await backend.embed(["test"]);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
 });

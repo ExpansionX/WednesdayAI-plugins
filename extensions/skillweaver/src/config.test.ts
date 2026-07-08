@@ -4,7 +4,7 @@ import { resolveConfig, checkSkillsMode, validateConfig } from "./config.js";
 const defaults = {
   enabled: true,
   decomposer: { provider: "openrouter", model: "qwen/qwen2.5-7b-instruct", temperature: 0.1, maxTokens: 256 },
-  embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small" },
+  embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small", customModel: "custom", customDimensions: null },
   retrieval: { topK: 3, hintSize: 15, minQueryLength: 20 },
   sad: { enabled: true },
   skills: { dirs: [] },
@@ -156,6 +156,52 @@ describe("validateConfig", () => {
   it("rejects out-of-range maxTokens", () => {
     const config = resolveConfig({ decomposer: { maxTokens: 2000 } });
     expect(() => validateConfig(config)).toThrow(/maxTokens/);
+  });
+
+  it("rejects empty decomposer.model", () => {
+    const config = resolveConfig({ decomposer: { model: "" } });
+    expect(() => validateConfig(config)).toThrow(/decomposer\.model/);
+  });
+
+  it("rejects whitespace-only decomposer.model", () => {
+    const config = resolveConfig({ decomposer: { model: "   " } });
+    expect(() => validateConfig(config)).toThrow(/decomposer\.model/);
+  });
+
+  it("rejects empty embedding.model for local backend", () => {
+    const config = resolveConfig({ embedding: { model: "" } });
+    expect(() => validateConfig(config)).toThrow(/embedding\.model/);
+  });
+
+  it("rejects empty embedding.cloudModel for cloud backend", () => {
+    const config = resolveConfig({ embedding: { backend: "cloud", cloudModel: "" } });
+    expect(() => validateConfig(config)).toThrow(/embedding\.cloudModel/);
+  });
+
+  it("rejects non-integer customDimensions", () => {
+    const config = resolveConfig({ embedding: { backend: "custom", endpoint: "http://x", customDimensions: 128.5 } });
+    expect(() => validateConfig(config)).toThrow(/customDimensions/);
+  });
+
+  it("rejects out-of-range customDimensions", () => {
+    const config = resolveConfig({ embedding: { backend: "custom", endpoint: "http://x", customDimensions: 9999 } });
+    expect(() => validateConfig(config)).toThrow(/customDimensions/);
+  });
+
+  it("accepts valid customDimensions", () => {
+    const config = resolveConfig({ embedding: { backend: "custom", endpoint: "http://x", customDimensions: 768 } });
+    expect(() => validateConfig(config)).not.toThrow();
+  });
+
+  it("accepts null customDimensions (uses default)", () => {
+    const config = resolveConfig({ embedding: { backend: "custom", endpoint: "http://x" } });
+    expect(() => validateConfig(config)).not.toThrow();
+    expect(config.embedding.customDimensions).toBeNull();
+  });
+
+  it("merges customModel from config", () => {
+    const config = resolveConfig({ embedding: { backend: "custom", customModel: "bge-small" } });
+    expect(config.embedding.customModel).toBe("bge-small");
   });
 });
 

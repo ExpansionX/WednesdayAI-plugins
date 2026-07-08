@@ -1,5 +1,4 @@
-// @ts-expect-error — plugin-sdk not installed in this workspace
-import { createSubsystemLogger } from "wednesdayai/plugin-sdk";
+import { createSubsystemLogger } from "./logger.js";
 import type { Decomposer } from "./decomposer.js";
 import type { Retriever } from "./retriever.js";
 import { formatSkillContext } from "./context-injector.js";
@@ -35,7 +34,7 @@ export function createCollectHandler(opts: HandlerOptions) {
     const text = event.cleanUserMessage?.text ?? "";
     if (!text || text.length < opts.minQueryLength) return {};
 
-    if (event.envelope && typeof event.envelope === "object" && (event.envelope as Record<string, unknown>)["isSubAgent"] === true) return {};
+    if (event.envelope != null && typeof event.envelope === "object" && (event.envelope as Record<string, unknown>)["isSubAgent"] === true) return {};
 
     const timeoutMs = opts.decomposerTimeoutMs ?? 30000;
 
@@ -60,7 +59,7 @@ export function createCollectHandler(opts: HandlerOptions) {
       }
 
       const results = await opts.retriever.retrieve(subTasks);
-      const contribution = formatSkillContext(results, text, subTasks, opts.decomposerModel);
+      const contribution = formatSkillContext(results, subTasks, opts.decomposerModel);
 
       if (contribution.prependContext && contribution.prependContext.length > 0) {
         log.info("routing complete", {

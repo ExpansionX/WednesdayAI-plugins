@@ -3,6 +3,18 @@ import { createSubsystemLogger } from "./logger.js";
 
 const log = createSubsystemLogger("skillweaver/decomposer");
 
+const MAX_LENGTH = 50000;
+
+export interface DecompositionError {
+  type: "network" | "auth" | "rate_limit" | "parse" | "timeout" | "unknown";
+  message: string;
+  statusCode?: number;
+}
+
+export interface DecompositionResultWithError extends DecompositionResult {
+  errors?: DecompositionError[];
+}
+
 export interface DecomposerOptions {
   fetchRaw?: typeof fetch;
   provider: string;
@@ -27,11 +39,15 @@ function resolveEndpoint(provider: string, baseUrl?: string | null): string {
   }
 }
 
+function sanitizeQueryForPrompt(query: string): string {
+  return query.replace(/<\/user_query>/g, "");
+}
+
 export function buildSADPass1Prompt(query: string): string {
   return `You are a query decomposition tool. Break the following user query into a list of atomic sub-tasks. Each sub-task should be a single, self-contained action that could be performed by a specific skill.
 
 <user_query>
-${query}
+${sanitizeQueryForPrompt(query)}
 </user_query>
 
 Output ONLY a JSON object with a "subTasks" key containing an array of strings:`;
@@ -44,7 +60,7 @@ Available skills:
 ${hints}
 
 <user_query>
-${query}
+${sanitizeQueryForPrompt(query)}
 </user_query>
 
 Output ONLY a JSON object with a "subTasks" key containing an array of strings:`;
@@ -59,10 +75,21 @@ function formatHints(hints: HintEntry[]): string {
   return `<available_skills>\n${sanitized.join("\n")}\n</available_skills>`;
 }
 
+function classifyError(err: unknown, statusCode?: number): DecompositionError {
+  const message = err instanceof Error ? err.message : String(err);
+  if (statusCode === 401 || statusCode === 403) return { type: "auth", message, statusCode };
+  if (statusCode === 429) return { type: "rate_limit", message, statusCode };
+  if (err instanceof DOMException && err.name === "AbortError") return { type: "timeout", message: "request timed out" };
+  if (err instanceof TypeError && err.message.includes("fetch")) return { type: "network", message };
+  return { type: "unknown", message };
+}
+
 export function extractJsonArray(text: string): string[] {
   let cleaned = text.trim();
   const codeBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (codeBlockMatch) cleaned = codeBlockMatch[1].trim();
+
+  if (cleaned.length > MAX_LENGTH) cleaned = cleaned.slice(0, MAX_LENGTH);
 
   try {
     const parsed = JSON.parse(cleaned) as Record<string, unknown>;
@@ -70,14 +97,13 @@ export function extractJsonArray(text: string): string[] {
       return parsed.subTasks as string[];
     }
   } catch { /* fall through to array extraction */ }
-  // backward-compatible: try raw JSON array
   try {
     const parsed = JSON.parse(cleaned);
     if (Array.isArray(parsed) && parsed.every((item): item is string => typeof item === "string")) {
       return parsed;
     }
   } catch { /* fall through to substring extraction */ }
-  const allMatches = [...cleaned.matchAll(/\[([\s\S]*?)\]/g)];
+  const allMatches = [...cleaned.matchAll(/\[([\s\S]*?)\]/g)].slice(-50);
   for (let i = allMatches.length - 1; i >= 0; i--) {
     try {
       const reparsed = JSON.parse(`[${allMatches[i][1]}]`);
@@ -105,7 +131,7 @@ export class Decomposer {
     };
   }
 
-  async decompose(query: string, hints?: HintEntry[], maxSubTasks = 10, signal?: AbortSignal): Promise<DecompositionResult> {
+  async decompose(query: string, hints?: HintEntry[], maxSubTasks = 10, signal?: AbortSignal): Promise<DecompositionResultWithError> {
     if (this.disposed) throw new Error("Decomposer: already disposed");
 
     const hasHints = hints && hints.length > 0;
@@ -154,7 +180,10 @@ export class Decomposer {
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => "");
-        throw new Error(`Decomposer: request failed ${response.status}: ${errBody}`);
+        const statusCode = response.status;
+        const error = classifyError(new Error(`Decomposer: request failed ${statusCode}: ${errBody}`), statusCode);
+        log.warn("decompose failed", { error: error.message, provider: this.config.provider });
+        return { subTasks: [], pass: hasHints ? 2 : 1, errors: [error] };
       }
 
       const json = await response.json() as Record<string, unknown>;
@@ -173,10 +202,16 @@ export class Decomposer {
         subTasks = subTasks.slice(0, maxSubTasks);
       }
 
-      return { subTasks, pass: hasHints ? 2 : 1 };
+      const errors: DecompositionError[] = [];
+      if (subTasks.length === 0 && content.length > 0) {
+        errors.push({ type: "parse", message: "failed to extract sub-tasks from LLM response" });
+      }
+
+      return { subTasks, pass: hasHints ? 2 : 1, ...(errors.length > 0 ? { errors } : {}) };
     } catch (err) {
-      log.warn("decompose failed", { error: String(err), provider: this.config.provider });
-      return { subTasks: [], pass: hasHints ? 2 : 1 };
+      const error = classifyError(err);
+      log.warn("decompose failed", { error: error.message, provider: this.config.provider });
+      return { subTasks: [], pass: hasHints ? 2 : 1, errors: [error] };
     }
   }
 

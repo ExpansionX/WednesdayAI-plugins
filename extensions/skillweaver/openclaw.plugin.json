@@ -68,6 +68,17 @@
             "default": "text-embedding-3-small",
             "description": "Model name for the cloud (OpenAI) backend."
           },
+          "customModel": {
+            "type": "string",
+            "default": "custom",
+            "description": "Model name sent to the custom backend endpoint."
+          },
+          "customDimensions": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096,
+            "description": "Vector dimensions for the custom backend. If null, defaults to 384."
+          },
           "endpoint": {
             "type": "string",
             "description": "OpenAI-compatible endpoint URL for the custom backend."
@@ -115,6 +126,17 @@
             "description": "Enable SAD (2-pass). False = Pass-1 only."
           }
         }
+      },
+      "skills": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dirs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Custom directories to scan for SKILL.md files. If empty, defaults to ~/.openclaw/skills."
+          }
+        }
       }
     }
   },
@@ -138,6 +160,10 @@
     "sad.enabled": {
       "label": "SAD (2-Pass)",
       "help": "Enable Skill-Aware Decomposition for improved accuracy."
+    },
+    "skills.dirs": {
+      "label": "Skill Directories",
+      "help": "Custom directories to scan for SKILL.md files. Leave empty for default (~/.openclaw/skills)."
     }
   }
 }

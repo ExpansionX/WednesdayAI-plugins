@@ -205,6 +205,69 @@ describe("createCollectHandler", () => {
     expect(result).toEqual({});
   });
 
+  it("filters empty-string subtasks from Pass-1 result", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({
+      subTasks: ["", "  ", "task1", ""], hints: [], pass: 1,
+    });
+    mockRetriever.retrieve.mockResolvedValue([]);
+    mockFormatSkillContext.mockReturnValueOnce({ prependContext: [] });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 5,
+      decomposerModel: "test",
+    });
+
+    await handler(baseEvent);
+    // retriever should receive only the non-empty subtask
+    expect(mockRetriever.retrieve).toHaveBeenCalledWith(["task1"]);
+  });
+
+  it("falls back to Pass-1 results when Pass-2 filtered is empty", async () => {
+    mockDecomposer.decompose
+      .mockResolvedValueOnce({ subTasks: ["task1"], hints: [], pass: 1 })
+      .mockResolvedValueOnce({ subTasks: ["", "  "], hints: [], pass: 2 });
+    mockRetriever.buildHintSet.mockResolvedValue([
+      { name: "github", description: "Git" },
+    ]);
+    mockRetriever.retrieve.mockResolvedValue([]);
+    mockFormatSkillContext.mockReturnValueOnce({ prependContext: [] });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: true,
+      minQueryLength: 5,
+      decomposerModel: "test",
+    });
+
+    await handler(baseEvent);
+    // Should use pass-1 subtasks since pass-2 filtered to empty
+    expect(mockRetriever.retrieve).toHaveBeenCalledWith(["task1"]);
+  });
+
+  it("skips SAD Pass-2 when hints are empty", async () => {
+    mockDecomposer.decompose
+      .mockResolvedValueOnce({ subTasks: ["task1"], hints: [], pass: 1 });
+    mockRetriever.buildHintSet.mockResolvedValue([]);
+    mockRetriever.retrieve.mockResolvedValue([]);
+    mockFormatSkillContext.mockReturnValueOnce({ prependContext: [] });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: true,
+      minQueryLength: 5,
+      decomposerModel: "test",
+    });
+
+    await handler(baseEvent);
+    // Only 1 decompose call — pass-2 skipped because hints empty
+    expect(mockDecomposer.decompose).toHaveBeenCalledTimes(1);
+  });
+
   it("handles null/undefined cleanUserMessage", async () => {
     const handler = createCollectHandler({
       decomposer: mockDecomposer as never,

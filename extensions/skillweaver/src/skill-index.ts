@@ -1,10 +1,17 @@
-// @ts-expect-error — plugin-sdk not installed in this workspace
-import { createSubsystemLogger } from "wednesdayai/plugin-sdk";
-import { watch, readdirSync } from "node:fs";
+import { createSubsystemLogger } from "./logger.js";
+import { watch } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { EmbeddingBackend, SkillEntry, SearchResult, IndexedSkill } from "./embedding/types.js";
 
 const log = createSubsystemLogger("skillweaver/index");
+
+interface HnswIndex {
+  initIndex(num: number): void;
+  setEf(ef: number): void;
+  addPoint(point: number[], id: number): void;
+  searchKnn(query: number[], k: number, filter?: unknown): { distances: number[] | Float64Array; neighbors: number[] | Float64Array };
+}
 
 export interface WatchOptions {
   debounceMs?: number;
@@ -13,8 +20,7 @@ export interface WatchOptions {
 export class SkillIndex {
   private backend: EmbeddingBackend;
   private skills = new Map<string, IndexedSkill>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private index: any | null = null;
+  private index: HnswIndex | null = null;
   private watchers = new Map<string, ReturnType<typeof watch>>();
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private buildGeneration = 0;
@@ -73,8 +79,9 @@ export class SkillIndex {
     newIndex.initIndex(vectors.length);
     newIndex.setEf(Math.min(400, Math.max(50, vectors.length * 2)));
 
-    const ids = Array.from({ length: vectors.length }, (_, i) => i);
-    ids.forEach((id, i) => newIndex.addPoint(Array.from(vectors[i]), id));
+    for (let i = 0; i < vectors.length; i++) {
+      newIndex.addPoint(Array.from(vectors[i]), i);
+    }
 
     if (gen === this.buildGeneration) {
       this.skills = newSkills;
@@ -84,12 +91,17 @@ export class SkillIndex {
   }
 
   async search(query: string, topK: number): Promise<SearchResult[]> {
-    if (!this.index || this.skills.size === 0) return [];
+    if (this.disposed || !this.index || this.skills.size === 0) return [];
 
     const queryVector = await this.backend.embedSingle(query);
-    const names = [...this.skills.keys()];
-    const k = Math.min(topK, this.skills.size);
-    const result = this.index.searchKnn(Array.from(queryVector), k, undefined);
+
+    const index = this.index;
+    const skills = this.skills;
+    if (!index || skills.size === 0) return [];
+
+    const names = [...skills.keys()];
+    const k = Math.min(topK, skills.size);
+    const result = index.searchKnn(Array.from(queryVector), k, undefined);
 
     const hits = this.parseSearchResult(result);
 
@@ -99,7 +111,8 @@ export class SkillIndex {
       const distance = hits.distances[i];
       if (idx < names.length) {
         const name = names[idx];
-        const skill = this.skills.get(name)!;
+        const skill = skills.get(name);
+        if (!skill) continue;
         results.push({
           name: skill.name,
           description: skill.description,
@@ -153,8 +166,8 @@ export class SkillIndex {
       this.watchers.set(dir, w);
 
       if (!useRecursive) {
-        try {
-          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        readdir(dir, { withFileTypes: true }).then((entries) => {
+          for (const entry of entries) {
             if (entry.isDirectory()) {
               const subDir = join(dir, entry.name);
               const subW = watch(subDir, { persistent: false }, (_event, filename) => {
@@ -164,7 +177,7 @@ export class SkillIndex {
               this.watchers.set(subDir, subW);
             }
           }
-        } catch { /* ignore readdir errors */ }
+        }).catch(() => { /* ignore readdir errors */ });
       }
 
       return w;

@@ -84,6 +84,50 @@ describe("CustomEmbedding", () => {
     expect(() => new CustomEmbedding({})).toThrow(/endpoint/);
   });
 
+  it("throws descriptive error when response has no data array", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ error: "bad request" }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings" });
+    await expect(backend.embed(["test"])).rejects.toThrow(/missing 'data'/);
+  });
+
+  it("passes an AbortSignal to fetch for timeout", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: Array(384).fill(0.1), index: 0 }],
+      }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings", timeoutMs: 5000 });
+    await backend.embed(["test"]);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("sends custom model name in request body", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: Array(384).fill(0.1), index: 0 }],
+      }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings", model: "my-model" });
+    await backend.embed(["test"]);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ body: expect.stringContaining("my-model") }),
+    );
+  });
+
   it("embedSingle delegates to embed", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

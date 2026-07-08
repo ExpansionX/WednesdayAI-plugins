@@ -73,6 +73,18 @@ describe("LocalEmbedding", () => {
     expect(() => backend.dispose()).not.toThrow();
   });
 
+  it("throws after dispose when embed is called", async () => {
+    const backend = new LocalEmbedding();
+    backend.dispose();
+    await expect(backend.embed(["test"])).rejects.toThrow(/disposed/);
+  });
+
+  it("dispose nulls the pipeline reference", () => {
+    const backend = new LocalEmbedding();
+    backend.dispose();
+    expect((backend as unknown as { pipeline: unknown }).pipeline).toBeNull();
+  });
+
   it("normalizes model name from config", async () => {
     const backend = new LocalEmbedding("sentence-transformers/all-MiniLM-L6-v2");
     await (backend as unknown as { pipeline: Promise<unknown> }).pipeline;

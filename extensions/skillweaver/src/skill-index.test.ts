@@ -247,4 +247,92 @@ describe("SkillIndex", () => {
       watcher?.close();
     });
   });
+
+  describe("unwatch() with rebuildTimer", () => {
+    it("clears pending rebuild timer on unwatch()", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+
+      let callCount = 0;
+      const provider = () => {
+        callCount++;
+        return sampleSkills;
+      };
+
+      const watcher = index.watch(TEST_SKILLS_DIR, provider, { debounceMs: 5000 });
+      expect(watcher).not.toBeNull();
+
+      // Trigger scheduleRebuild by emitting change event with SKILL.md filename
+      // fs.watch callback is registered on the "change" event
+      watcher!.emit("change", "rename", "SKILL.md");
+
+      // Immediately unwatch — should clear the pending rebuild timer
+      const closed = index.unwatch();
+      expect(closed).toBe(true);
+
+      // Wait — provider should NOT have been called since timer was cleared
+      await new Promise((r) => setTimeout(r, 100));
+      expect(callCount).toBe(0);
+    });
+  });
+
+  describe("search() after build with empty entries clears index", () => {
+    it("returns empty when index was cleared by empty build", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+      expect(index.size).toBeGreaterThan(0);
+
+      // Rebuild with empty — clears index
+      await index.build([]);
+      expect(index.size).toBe(0);
+
+      const results = await index.search("github", 5);
+      expect(results).toEqual([]);
+    });
+  });
+
+  describe("search() race condition", () => {
+    it("returns empty when dispose() is called during embedSingle await", async () => {
+      let resolveEmbed: (v: Float32Array) => void = () => {};
+      const delayingBackend: EmbeddingBackend = {
+        id: "test",
+        dimensions: DIM,
+        embed: async (texts: string[]) => texts.map(() => new Float32Array(DIM)),
+        embedSingle: () => new Promise<Float32Array>((resolve) => { resolveEmbed = resolve; }),
+        dispose: () => {},
+      };
+
+      const index = new SkillIndex(delayingBackend);
+      await index.build(sampleSkills);
+
+      const searchPromise = index.search("query", 3);
+      index.dispose();
+      resolveEmbed(new Float32Array(DIM));
+
+      const results = await searchPromise;
+      expect(results).toEqual([]);
+    });
+
+    it("does not throw when index is replaced by a new build during search", async () => {
+      let resolveEmbed: (v: Float32Array) => void = () => {};
+      const delayingBackend: EmbeddingBackend = {
+        id: "test",
+        dimensions: DIM,
+        embed: async (texts: string[]) => texts.map(() => new Float32Array(DIM)),
+        embedSingle: () => new Promise<Float32Array>((resolve) => { resolveEmbed = resolve; }),
+        dispose: () => {},
+      };
+
+      const index = new SkillIndex(delayingBackend);
+      await index.build(sampleSkills.slice(0, 2));
+
+      const searchPromise = index.search("query", 3);
+      await index.build(sampleSkills);
+      resolveEmbed(new Float32Array(DIM));
+
+      const results = await searchPromise;
+      expect(results).toBeDefined();
+      expect(Array.isArray(results)).toBe(true);
+    });
+  });
 });

@@ -3,11 +3,13 @@ import type { EmbeddingBackend } from "./types.js";
 const DEFAULT_MODEL = "text-embedding-3-small";
 const DEFAULT_ENDPOINT = "https://api.openai.com/v1/embeddings";
 const DIMENSIONS = 1536;
+const DEFAULT_TIMEOUT_MS = 30000;
 
 export interface CloudEmbeddingOptions {
   apiKey?: string | null;
   model?: string;
   endpoint?: string;
+  timeoutMs?: number;
 }
 
 export class CloudEmbedding implements EmbeddingBackend {
@@ -17,12 +19,14 @@ export class CloudEmbedding implements EmbeddingBackend {
   private apiKey: string | null;
   private model: string;
   private endpoint: string;
+  private timeoutMs: number;
   private disposed = false;
 
   constructor(opts: CloudEmbeddingOptions = {}) {
     this.apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY ?? null;
     this.model = opts.model ?? DEFAULT_MODEL;
     this.endpoint = opts.endpoint ?? DEFAULT_ENDPOINT;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
@@ -36,12 +40,20 @@ export class CloudEmbedding implements EmbeddingBackend {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
 
-    const response = await fetch(this.endpoint, { method: "POST", headers, body });
+    const response = await fetch(this.endpoint, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
     if (!response.ok) {
       throw new Error(`CloudEmbedding: request failed ${response.status}: ${await response.text()}`);
     }
 
-    const json = await response.json() as { data: Array<{ embedding: number[]; index: number }> };
+    const json = await response.json() as { data?: Array<{ embedding: number[]; index: number }> };
+    if (!Array.isArray(json.data)) {
+      throw new Error("CloudEmbedding: API response missing 'data' array");
+    }
     const sorted = json.data.sort((a, b) => a.index - b.index);
     if (sorted.length > 0 && sorted[0].embedding.length !== this.dimensions) {
       throw new Error(

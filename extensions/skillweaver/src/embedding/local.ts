@@ -8,7 +8,7 @@ export class LocalEmbedding implements EmbeddingBackend {
   readonly dimensions = DIMENSIONS;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private pipeline: Promise<any>;
+  private pipeline: Promise<any> | null;
   private disposed = false;
 
   constructor(modelName: string = DEFAULT_MODEL) {
@@ -23,7 +23,7 @@ export class LocalEmbedding implements EmbeddingBackend {
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
-    if (this.disposed) throw new Error("LocalEmbedding: already disposed");
+    if (this.disposed || !this.pipeline) throw new Error("LocalEmbedding: already disposed");
     const pipe = await this.pipeline;
     const results: Float32Array[] = [];
     for (const text of texts) {
@@ -41,5 +41,6 @@ export class LocalEmbedding implements EmbeddingBackend {
 
   dispose(): void {
     this.disposed = true;
+    this.pipeline = null;
   }
 }

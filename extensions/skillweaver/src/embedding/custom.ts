@@ -1,10 +1,13 @@
 import type { EmbeddingBackend } from "./types.js";
 
+const DEFAULT_TIMEOUT_MS = 30000;
+
 export interface CustomEmbeddingOptions {
   endpoint?: string | null;
   apiKey?: string | null;
   dimensions?: number;
   model?: string;
+  timeoutMs?: number;
 }
 
 export class CustomEmbedding implements EmbeddingBackend {
@@ -14,6 +17,7 @@ export class CustomEmbedding implements EmbeddingBackend {
   private endpoint: string;
   private apiKey: string | null;
   private model: string;
+  private timeoutMs: number;
   private disposed = false;
 
   constructor(opts: CustomEmbeddingOptions) {
@@ -24,6 +28,7 @@ export class CustomEmbedding implements EmbeddingBackend {
     this.apiKey = opts.apiKey ?? null;
     this.dimensions = opts.dimensions ?? 384;
     this.model = opts.model ?? "custom";
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
@@ -37,12 +42,20 @@ export class CustomEmbedding implements EmbeddingBackend {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
 
-    const response = await fetch(this.endpoint, { method: "POST", headers, body });
+    const response = await fetch(this.endpoint, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
     if (!response.ok) {
       throw new Error(`CustomEmbedding: request failed ${response.status}: ${await response.text()}`);
     }
 
-    const json = await response.json() as { data: Array<{ embedding: number[]; index: number }> };
+    const json = await response.json() as { data?: Array<{ embedding: number[]; index: number }> };
+    if (!Array.isArray(json.data)) {
+      throw new Error("CustomEmbedding: endpoint response missing 'data' array");
+    }
     const sorted = json.data.sort((a, b) => a.index - b.index);
     if (sorted.length > 0 && sorted[0].embedding.length !== this.dimensions) {
       throw new Error(

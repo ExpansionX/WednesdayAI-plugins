@@ -12,6 +12,8 @@ export interface SkillWeaverConfig {
     backend: "local" | "cloud" | "custom";
     model: string;
     cloudModel: string;
+    customModel: string;
+    customDimensions?: number | null;
     endpoint?: string | null;
     apiKey?: string | null;
   };
@@ -40,6 +42,8 @@ const DEFAULTS = {
     backend: "local" as const,
     model: "all-MiniLM-L6-v2",
     cloudModel: "text-embedding-3-small",
+    customModel: "custom",
+    customDimensions: null,
   },
   retrieval: {
     topK: 3,
@@ -125,6 +129,25 @@ export function validateConfig(config: SkillWeaverConfig): void {
   }
   if (config.decomposer.provider === "openai-compatible" && !config.decomposer.baseUrl) {
     throw new Error("decomposer.baseUrl is required when provider is 'openai-compatible'");
+  }
+  if (!config.decomposer.model || config.decomposer.model.trim() === "") {
+    throw new Error("decomposer.model must be a non-empty string");
+  }
+  if (config.embedding.backend === "local" && (!config.embedding.model || config.embedding.model.trim() === "")) {
+    throw new Error("embedding.model must be a non-empty string when backend is 'local'");
+  }
+  if (config.embedding.backend === "cloud" && (!config.embedding.cloudModel || config.embedding.cloudModel.trim() === "")) {
+    throw new Error("embedding.cloudModel must be a non-empty string when backend is 'cloud'");
+  }
+  if (config.embedding.backend === "custom") {
+    if (config.embedding.customDimensions != null) {
+      if (!Number.isFinite(config.embedding.customDimensions) || !Number.isInteger(config.embedding.customDimensions)) {
+        throw new Error("embedding.customDimensions must be a finite integer");
+      }
+      if (config.embedding.customDimensions < 1 || config.embedding.customDimensions > 4096) {
+        throw new Error(`embedding.customDimensions must be 1-4096, got ${config.embedding.customDimensions}`);
+      }
+    }
   }
 }
 

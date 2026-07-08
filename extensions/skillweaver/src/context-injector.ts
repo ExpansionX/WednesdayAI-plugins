@@ -18,12 +18,15 @@ function estimateTokens(text: string): number {
 }
 
 function sanitizeMarkdown(text: string): string {
-  return text.replace(/[#*_[\]`<>]/g, "\\$&").replace(/\n/g, " ").slice(0, 200);
+  const limit = 200;
+  const truncated = text.length > limit;
+  const sliced = truncated ? text.slice(0, limit) : text;
+  const escaped = sliced.replace(/[#*_[\]`<>]/g, "\\$&").replace(/\n/g, " ");
+  return truncated ? escaped + "\u2026" : escaped;
 }
 
 export function formatSkillContext(
   skills: SearchResult[],
-  _query: string,
   subTasks: string[],
   decomposerModel?: string,
 ): PromptContribution {

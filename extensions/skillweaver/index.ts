@@ -27,6 +27,8 @@ function resolveBackend(config: ReturnType<typeof resolveConfig>): EmbeddingBack
       return new CustomEmbedding({
         endpoint: config.embedding.endpoint,
         apiKey: config.embedding.apiKey,
+        dimensions: config.embedding.customDimensions ?? undefined,
+        model: config.embedding.customModel,
       });
     default:
       throw new Error(`Unknown embedding backend: ${config.embedding.backend}`);
@@ -143,7 +145,11 @@ const plugin = {
       disposed = true;
       decomposer.dispose();
       index.dispose();
-      await Promise.resolve(backend.dispose());
+      try {
+        await backend.dispose();
+      } catch (err) {
+        log.warn("backend dispose failed", { error: String(err) });
+      }
     });
 
     discoverSkills(config).then(({ skills, dirs }) => {

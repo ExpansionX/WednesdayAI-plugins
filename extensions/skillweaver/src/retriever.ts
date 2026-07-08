@@ -33,6 +33,7 @@ export function createRetriever(index: SkillIndex, opts: RetrieverOptions): Retr
         }
       }
 
+      allResults.sort((a, b) => b.score - a.score);
       return allResults;
     },
 
