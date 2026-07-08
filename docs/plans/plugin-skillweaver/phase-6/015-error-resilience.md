@@ -8,7 +8,9 @@ parallel: false
 conflicts_with: []
 files:
   - extensions/skillweaver/src/handler.ts
+  - extensions/skillweaver/src/handler.test.ts
   - extensions/skillweaver/src/decomposer.ts
+  - extensions/skillweaver/src/decomposer.timeout.test.ts
 irreversible: false
 scope_test: "extensions/skillweaver/src/handler.test.ts"
 allowed_change: edit
