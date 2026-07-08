@@ -8,6 +8,7 @@ parallel: false
 conflicts_with: []
 files:
   - extensions/skillweaver/src/context-injector.ts
+  - extensions/skillweaver/src/context-injector.test.ts
 irreversible: false
 scope_test: "extensions/skillweaver/src/context-injector.test.ts"
 allowed_change: create
