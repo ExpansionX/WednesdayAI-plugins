@@ -28,7 +28,6 @@ export interface SearchResult {
 
 export interface DecompositionResult {
   subTasks: string[];
-  hints: string[];
   pass: 1 | 2;
 }
 

@@ -34,7 +34,6 @@ export function formatSkillContext(
   for (const skill of skills) {
     lines.push(`### ${skill.name}`);
     lines.push(skill.description);
-    lines.push(`Location: ${skill.location}`);
     lines.push("");
   }
 

@@ -68,7 +68,9 @@ export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
   const retrieval = { ...DEFAULTS.retrieval, ...rawObj(raw.retrieval) as Partial<SkillWeaverConfig["retrieval"]> };
   const sad = { ...DEFAULTS.sad, ...rawObj(raw.sad) as Partial<SkillWeaverConfig["sad"]> };
   const rawSkills = rawObj(raw.skills);
-  const skills = { dirs: (rawSkills.dirs as string[] | undefined) ?? DEFAULTS.skills.dirs };
+  const rawDirs = rawSkills.dirs;
+  const dirs = Array.isArray(rawDirs) ? rawDirs.filter((d): d is string => typeof d === "string" && d.length > 0) : DEFAULTS.skills.dirs;
+  const skills = { dirs };
   return {
     ...DEFAULTS,
     enabled: raw.enabled !== undefined ? Boolean(raw.enabled) : DEFAULTS.enabled,
@@ -98,6 +100,12 @@ export function validateConfig(config: SkillWeaverConfig): void {
   }
   if (config.embedding.backend === "custom" && !config.embedding.endpoint) {
     throw new Error("embedding.endpoint is required when backend is 'custom'");
+  }
+  if (config.decomposer.temperature < 0 || config.decomposer.temperature > 2) {
+    throw new Error(`temperature must be 0-2, got ${config.decomposer.temperature}`);
+  }
+  if (config.decomposer.maxTokens < 50 || config.decomposer.maxTokens > 1024) {
+    throw new Error(`maxTokens must be 50-1024, got ${config.decomposer.maxTokens}`);
   }
 }
 

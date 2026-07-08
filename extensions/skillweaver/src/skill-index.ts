@@ -99,7 +99,7 @@ export class SkillIndex {
 
   watch(
     dir: string,
-    skillProvider: () => SkillEntry[],
+    skillProvider: () => SkillEntry[] | Promise<SkillEntry[]>,
     opts: WatchOptions = {},
   ): ReturnType<typeof watch> | null {
     this.unwatch();
@@ -109,7 +109,7 @@ export class SkillIndex {
         if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
         this.rebuildTimer = setTimeout(async () => {
           try {
-            const entries = skillProvider();
+            const entries = await skillProvider();
             await this.build(entries);
           } catch (err) {
             log.error("rebuild failed", { error: String(err) });

@@ -167,10 +167,10 @@ export class Decomposer {
         subTasks = subTasks.slice(0, maxSubTasks);
       }
 
-      return { subTasks, hints: [], pass: hasHints ? 2 : 1 };
+      return { subTasks, pass: hasHints ? 2 : 1 };
     } catch (err) {
       log.warn("decompose failed", { error: String(err), provider: this.config.provider });
-      return { subTasks: [], hints: [], pass: 1 };
+      return { subTasks: [], pass: 1 };
     }
   }
 

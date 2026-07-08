@@ -55,7 +55,7 @@ async function discoverSkills(config: ReturnType<typeof resolveConfig>): Promise
         const skillFile = path.join(dir, item.name, "SKILL.md");
         try {
           const content = await fs.readFile(skillFile, "utf-8");
-          const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+          const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
           if (!fmMatch) continue;
           const fmText = fmMatch[1];
           const nameMatch = fmText.match(/^name:\s*(.+)/m);
@@ -141,42 +141,16 @@ const plugin = {
     discoverSkills(config).then((skills) => {
       index.build(skills).then(() => {
         const dirs = [...(config.skills?.dirs ?? [])];
-        if (dirs.length > 0) {
-          index.watch(dirs[0], () => {
-            const { readdirSync, statSync } = require("node:fs");
-            const path = require("node:path");
-            const os = require("node:os");
-            const result: SkillEntry[] = [];
-            for (const dir of dirs) {
-              try {
-                const items = readdirSync(dir, { withFileTypes: true });
-                for (const item of items) {
-                  if (!item.isDirectory()) continue;
-                  const skillFile = path.join(dir, item.name, "SKILL.md");
-                  try {
-                    const content = require("node:fs").readFileSync(skillFile, "utf-8");
-                    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-                    if (!fmMatch) continue;
-                    const fmText = fmMatch[1];
-                    const nameMatch = fmText.match(/^name:\s*(.+)/m);
-                    const descMatch = fmText.match(/^description:\s*(.+)/m);
-                    if (!nameMatch) continue;
-                    result.push({
-                      name: nameMatch[1].trim().replace(/^["']|["']$/g, ""),
-                      description: descMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? nameMatch[1].trim().replace(/^["']|["']$/g, ""),
-                      location: skillFile,
-                      source: "managed",
-                    });
-                  } catch { /* skip unreadable */ }
-                }
-              } catch { /* skip unreadable dir */ }
-            }
-            return result;
+        for (const dir of dirs) {
+          index.watch(dir, async () => {
+            return await discoverSkills(config);
           });
         }
       }).catch((err: unknown) => {
         api.logger.warn("skillweaver: initial index build failed", { error: String(err) });
       });
+    }).catch((err: unknown) => {
+      api.logger.warn("skillweaver: skill discovery failed", { error: String(err) });
     });
 
     api.logger.info("skillweaver: registered");
