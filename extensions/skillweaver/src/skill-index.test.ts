@@ -125,6 +125,50 @@ describe("SkillIndex", () => {
       index.dispose();
       expect(index.size).toBe(0);
     });
+
+    it("prevents build after dispose", async () => {
+      const index = new SkillIndex(mockBackend);
+      index.dispose();
+      await index.build(sampleSkills);
+      expect(index.size).toBe(0);
+    });
+
+    it("prevents watch after dispose", async () => {
+      const index = new SkillIndex(mockBackend);
+      index.dispose();
+      const watcher = index.watch(TEST_SKILLS_DIR, () => sampleSkills);
+      expect(watcher).toBeNull();
+    });
+
+    it("is idempotent", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+      index.dispose();
+      index.dispose();
+      expect(index.size).toBe(0);
+    });
+  });
+
+  describe("generation counter", () => {
+    it("build with disposed flag is no-op", async () => {
+      const index = new SkillIndex(mockBackend);
+      index.dispose();
+      await index.build(sampleSkills);
+      expect(index.size).toBe(0);
+    });
+  });
+
+  describe("vectors-length guard", () => {
+    it("aborts build when embed returns mismatched count", async () => {
+      const badBackend: EmbeddingBackend = {
+        ...mockBackend,
+        embed: async () => [new Float32Array(4)], // Only 1 vector for 5 skills
+      };
+
+      const index = new SkillIndex(badBackend);
+      await index.build(sampleSkills);
+      expect(index.size).toBe(0);
+    });
   });
 
   describe("watch() / rebuild", () => {
@@ -156,14 +200,32 @@ describe("SkillIndex", () => {
       expect(index.unwatch()).toBe(false);
     });
 
-    it("second watch() closes the first watcher", async () => {
+    it("second watch() returns the same watcher for same dir", async () => {
       const index = new SkillIndex(mockBackend);
       await index.build(sampleSkills);
       const w1 = index.watch(TEST_SKILLS_DIR, () => [...sampleSkills]);
       const w2 = index.watch(TEST_SKILLS_DIR, () => [...sampleSkills]);
-      expect(w1?.close).toBeDefined();
-      expect(w2?.close).toBeDefined();
-      w2?.close();
+      expect(w1).toBe(w2);
+      w1?.close();
+    });
+
+    it("watch() accepts async skillProvider", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+      const watcher = index.watch(TEST_SKILLS_DIR, async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return [...sampleSkills];
+      });
+      expect(watcher).toBeDefined();
+      watcher?.close();
+    });
+
+    it("watch() returns null when disposed", async () => {
+      const index = new SkillIndex(mockBackend);
+      await index.build(sampleSkills);
+      index.dispose();
+      const watcher = index.watch(TEST_SKILLS_DIR, () => sampleSkills);
+      expect(watcher).toBeNull();
     });
 
     it("calls skillProvider and rebuilds after debounce", async () => {

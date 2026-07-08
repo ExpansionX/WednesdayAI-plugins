@@ -26,6 +26,71 @@ describe("resolveConfig", () => {
     expect(result.decomposer.model).toBe("gpt-4o-mini");
     expect(result.decomposer.temperature).toBe(0.2);
   });
+
+  it("handles enabled: false", () => {
+    const result = resolveConfig({ enabled: false });
+    expect(result.enabled).toBe(false);
+  });
+
+  it("handles enabled: 'false' string", () => {
+    const result = resolveConfig({ enabled: "false" });
+    expect(result.enabled).toBe(false);
+  });
+
+  it("handles enabled: '0' string", () => {
+    const result = resolveConfig({ enabled: "0" });
+    expect(result.enabled).toBe(false);
+  });
+
+  it("handles enabled: 'False' (case-insensitive)", () => {
+    const result = resolveConfig({ enabled: "False" });
+    expect(result.enabled).toBe(false);
+  });
+
+  it("handles enabled: '  ' whitespace-only string", () => {
+    const result = resolveConfig({ enabled: "  " });
+    expect(result.enabled).toBe(false);
+  });
+
+  it("handles enabled: true boolean", () => {
+    const result = resolveConfig({ enabled: true });
+    expect(result.enabled).toBe(true);
+  });
+
+  it("handles enabled: 'true' string", () => {
+    const result = resolveConfig({ enabled: "true" });
+    expect(result.enabled).toBe(true);
+  });
+
+  it("handles enabled: null (uses default)", () => {
+    const result = resolveConfig({ enabled: null });
+    expect(result.enabled).toBe(true);
+  });
+
+  it("handles skills.dirs as string (coerced to array)", () => {
+    const result = resolveConfig({ skills: { dirs: "/path/to/skills" } });
+    expect(result.skills.dirs).toEqual(["/path/to/skills"]);
+  });
+
+  it("handles skills.dirs as array", () => {
+    const result = resolveConfig({ skills: { dirs: ["/a", "/b"] } });
+    expect(result.skills.dirs).toEqual(["/a", "/b"]);
+  });
+
+  it("filters non-string skills.dirs entries", () => {
+    const result = resolveConfig({ skills: { dirs: ["/a", 123, "", "/b"] } });
+    expect(result.skills.dirs).toEqual(["/a", "/b"]);
+  });
+
+  it("handles non-object decomposer gracefully", () => {
+    const result = resolveConfig({ decomposer: "invalid" });
+    expect(result.decomposer.provider).toBe("openrouter");
+  });
+
+  it("handles non-object embedding gracefully", () => {
+    const result = resolveConfig({ embedding: [1, 2, 3] });
+    expect(result.embedding.backend).toBe("local");
+  });
 });
 
 describe("validateConfig", () => {
@@ -46,6 +111,51 @@ describe("validateConfig", () => {
   it("rejects custom backend without endpoint", () => {
     const config = resolveConfig({ embedding: { backend: "custom" } });
     expect(() => validateConfig(config)).toThrow(/endpoint/);
+  });
+
+  it("rejects openai-compatible without baseUrl", () => {
+    const config = resolveConfig({ decomposer: { provider: "openai-compatible" } });
+    expect(() => validateConfig(config)).toThrow(/baseUrl/);
+  });
+
+  it("rejects NaN for topK", () => {
+    const config = resolveConfig({ retrieval: { topK: NaN } });
+    expect(() => validateConfig(config)).toThrow(/finite/);
+  });
+
+  it("rejects float for topK", () => {
+    const config = resolveConfig({ retrieval: { topK: 3.5 } });
+    expect(() => validateConfig(config)).toThrow(/integer/);
+  });
+
+  it("rejects float for maxTokens", () => {
+    const config = resolveConfig({ decomposer: { maxTokens: 256.5 } });
+    expect(() => validateConfig(config)).toThrow(/integer/);
+  });
+
+  it("rejects out-of-range temperature", () => {
+    const config = resolveConfig({ decomposer: { temperature: 3 } });
+    expect(() => validateConfig(config)).toThrow(/temperature/);
+  });
+
+  it("rejects out-of-range topK", () => {
+    const config = resolveConfig({ retrieval: { topK: 0 } });
+    expect(() => validateConfig(config)).toThrow(/topK/);
+  });
+
+  it("rejects out-of-range hintSize", () => {
+    const config = resolveConfig({ retrieval: { hintSize: 100 } });
+    expect(() => validateConfig(config)).toThrow(/hintSize/);
+  });
+
+  it("rejects out-of-range minQueryLength", () => {
+    const config = resolveConfig({ retrieval: { minQueryLength: 1 } });
+    expect(() => validateConfig(config)).toThrow(/minQueryLength/);
+  });
+
+  it("rejects out-of-range maxTokens", () => {
+    const config = resolveConfig({ decomposer: { maxTokens: 2000 } });
+    expect(() => validateConfig(config)).toThrow(/maxTokens/);
   });
 });
 
@@ -68,5 +178,22 @@ describe("checkSkillsMode", () => {
   it("detects 'compact' mode", () => {
     const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: "compact" } } } } });
     expect(result).toBe("compact");
+  });
+
+  it("returns 'default' for unrecognized mode string", () => {
+    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: "custom" } } } } });
+    expect(result).toBe("default");
+  });
+
+  it("returns 'default' for undefined config", () => {
+    expect(checkSkillsMode(undefined)).toBe("default");
+  });
+
+  it("returns 'default' for empty agents object", () => {
+    expect(checkSkillsMode({ agents: {} })).toBe("default");
+  });
+
+  it("returns 'default' for missing sections", () => {
+    expect(checkSkillsMode({ agents: { defaults: { systemPrompt: {} } } })).toBe("default");
   });
 });

@@ -180,5 +180,186 @@ describe("Decomposer", () => {
       const result = await decomposer.decompose("query");
       expect(result.subTasks).toEqual([]);
     });
+
+    it("returns correct pass number on error during pass 2", async () => {
+      mockFetchRaw.mockRejectedValueOnce(new Error("rate limited"));
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "test",
+        model: "test",
+        apiKey: "sk-test",
+      });
+
+      const result = await decomposer.decompose("query", [{ name: "github", description: "Git" }]);
+      expect(result.subTasks).toEqual([]);
+      expect(result.pass).toBe(2);
+    });
+
+    it("throws when disposed", async () => {
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "test",
+        model: "test",
+        apiKey: "sk-test",
+      });
+      decomposer.dispose();
+      await expect(decomposer.decompose("query")).rejects.toThrow(/disposed/);
+    });
+  });
+
+  describe("Anthropic provider", () => {
+    it("sends correct headers and body format", async () => {
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "anthropic",
+        model: "claude-haiku",
+        apiKey: "sk-ant-test",
+      });
+
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [{ text: '{"subTasks": ["task1"]}' }],
+        }),
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual(["task1"]);
+      expect(result.pass).toBe(1);
+
+      const call = mockFetchRaw.mock.calls[mockFetchRaw.mock.calls.length - 1];
+      expect(call[1].headers["x-api-key"]).toBe("sk-ant-test");
+      expect(call[1].headers["anthropic-version"]).toBe("2023-06-01");
+      expect(call[1].headers.Authorization).toBeUndefined();
+    });
+
+    it("omits x-api-key header when no apiKey", async () => {
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "anthropic",
+        model: "claude-haiku",
+      });
+
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [{ text: '{"subTasks": ["task1"]}' }],
+        }),
+      });
+
+      await decomposer.decompose("query");
+      const call = mockFetchRaw.mock.calls[mockFetchRaw.mock.calls.length - 1];
+      expect(call[1].headers["x-api-key"]).toBeUndefined();
+    });
+
+    it("handles empty content array", async () => {
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ content: [] }),
+      });
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "anthropic",
+        model: "claude-haiku",
+        apiKey: "sk-ant-test",
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual([]);
+    });
+  });
+
+  describe("HTTP error responses", () => {
+    it("returns empty on 401", async () => {
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => "Unauthorized",
+      });
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openrouter",
+        model: "test",
+        apiKey: "sk-test",
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual([]);
+    });
+
+    it("returns empty on 429", async () => {
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        text: async () => "Rate limited",
+      });
+
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openrouter",
+        model: "test",
+        apiKey: "sk-test",
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual([]);
+    });
+  });
+
+  describe("endpoint resolution", () => {
+    it("uses OpenAI endpoint for openai provider", async () => {
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+      });
+
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"subTasks": ["task"]}' } }],
+        }),
+      });
+
+      await decomposer.decompose("query");
+      const call = mockFetchRaw.mock.calls[mockFetchRaw.mock.calls.length - 1];
+      expect(call[0]).toContain("api.openai.com");
+    });
+
+    it("uses custom baseUrl for openai-compatible", async () => {
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openai-compatible",
+        model: "test",
+        baseUrl: "http://localhost:8080/v1/chat/completions",
+        apiKey: "sk-test",
+      });
+
+      mockFetchRaw.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"subTasks": ["task"]}' } }],
+        }),
+      });
+
+      await decomposer.decompose("query");
+      const call = mockFetchRaw.mock.calls[mockFetchRaw.mock.calls.length - 1];
+      expect(call[0]).toBe("http://localhost:8080/v1/chat/completions");
+    });
+
+    it("returns empty for openai-compatible without baseUrl", async () => {
+      const decomposer = new Decomposer({
+        fetchRaw: mockFetchRaw,
+        provider: "openai-compatible",
+        model: "test",
+      });
+
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual([]);
+    });
   });
 });
