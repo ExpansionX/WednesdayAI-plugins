@@ -89,23 +89,26 @@ export function validateConfig(config: SkillWeaverConfig): void {
   if (!VALID_BACKENDS.has(config.embedding.backend)) {
     throw new Error(`Invalid embedding backend: ${config.embedding.backend}`);
   }
-  if (config.retrieval.topK < 1 || config.retrieval.topK > 10) {
-    throw new Error(`topK must be 1-10, got ${config.retrieval.topK}`);
-  }
-  if (config.retrieval.hintSize < 5 || config.retrieval.hintSize > 50) {
-    throw new Error(`hintSize must be 5-50, got ${config.retrieval.hintSize}`);
-  }
-  if (config.retrieval.minQueryLength < 5 || config.retrieval.minQueryLength > 500) {
-    throw new Error(`minQueryLength must be 5-500, got ${config.retrieval.minQueryLength}`);
+  const numericFields: Array<[string, number, number, number]> = [
+    ["topK", config.retrieval.topK, 1, 10],
+    ["hintSize", config.retrieval.hintSize, 5, 50],
+    ["minQueryLength", config.retrieval.minQueryLength, 5, 500],
+    ["temperature", config.decomposer.temperature, 0, 2],
+    ["maxTokens", config.decomposer.maxTokens, 50, 1024],
+  ];
+  for (const [name, value, min, max] of numericFields) {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${name} must be a finite number, got ${value}`);
+    }
+    if (value < min || value > max) {
+      throw new Error(`${name} must be ${min}-${max}, got ${value}`);
+    }
   }
   if (config.embedding.backend === "custom" && !config.embedding.endpoint) {
     throw new Error("embedding.endpoint is required when backend is 'custom'");
   }
-  if (config.decomposer.temperature < 0 || config.decomposer.temperature > 2) {
-    throw new Error(`temperature must be 0-2, got ${config.decomposer.temperature}`);
-  }
-  if (config.decomposer.maxTokens < 50 || config.decomposer.maxTokens > 1024) {
-    throw new Error(`maxTokens must be 50-1024, got ${config.decomposer.maxTokens}`);
+  if (config.decomposer.provider === "openai-compatible" && !config.decomposer.baseUrl) {
+    throw new Error("decomposer.baseUrl is required when provider is 'openai-compatible'");
   }
 }
 

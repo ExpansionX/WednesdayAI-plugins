@@ -42,9 +42,14 @@ export class CloudEmbedding implements EmbeddingBackend {
     }
 
     const json = await response.json() as { data: Array<{ embedding: number[]; index: number }> };
-    return json.data
-      .sort((a, b) => a.index - b.index)
-      .map((item) => new Float32Array(item.embedding));
+    const sorted = json.data.sort((a, b) => a.index - b.index);
+    if (sorted.length > 0 && sorted[0].embedding.length !== this.dimensions) {
+      throw new Error(
+        `CloudEmbedding: dimension mismatch — expected ${this.dimensions} but API returned ${sorted[0].embedding.length}. ` +
+        `Configure 'embedding.cloudModel' to match the model's actual output dimensions.`
+      );
+    }
+    return sorted.map((item) => new Float32Array(item.embedding));
   }
 
   async embedSingle(text: string): Promise<Float32Array> {

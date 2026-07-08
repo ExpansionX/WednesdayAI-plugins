@@ -14,9 +14,9 @@ export class SkillIndex {
   private skills = new Map<string, IndexedSkill>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private index: any | null = null;
-  private watcher: ReturnType<typeof watch> | null = null;
+  private watchers = new Map<string, ReturnType<typeof watch>>();
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
-  private watchDir: string | null = null;
+  private buildGeneration = 0;
 
   constructor(backend: EmbeddingBackend) {
     this.backend = backend;
@@ -27,38 +27,53 @@ export class SkillIndex {
   }
 
   async build(entries: SkillEntry[]): Promise<void> {
-    this.skills.clear();
-    this.index = null;
-    if (entries.length === 0) return;
-
-    for (const entry of entries) {
-      this.skills.set(entry.name, { ...entry, vector: new Float32Array(0) });
+    const gen = ++this.buildGeneration;
+    const newSkills = new Map<string, IndexedSkill>();
+    if (entries.length === 0) {
+      if (gen === this.buildGeneration) {
+        this.skills = newSkills;
+        this.index = null;
+      }
+      return;
     }
 
-    const names = [...this.skills.keys()];
+    for (const entry of entries) {
+      newSkills.set(entry.name, { ...entry, vector: new Float32Array(0) });
+    }
+
+    const names = [...newSkills.keys()];
     const documents = names.map((name) => {
-      const skill = this.skills.get(name)!;
+      const skill = newSkills.get(name)!;
       return `${skill.name}: ${skill.description}`;
     });
 
     const vectors = await this.backend.embed(documents);
     for (let i = 0; i < names.length; i++) {
-      const existing = this.skills.get(names[i]);
+      const existing = newSkills.get(names[i]);
       if (existing) existing.vector = vectors[i];
     }
 
-    if (vectors.length === 0) return;
+    if (vectors.length === 0) {
+      if (gen === this.buildGeneration) {
+        this.skills = newSkills;
+        this.index = null;
+      }
+      return;
+    }
 
     const { HierarchicalNSW } = await import("hnswlib-node");
-    const index = new HierarchicalNSW("cosine", this.backend.dimensions);
-    index.initIndex(vectors.length);
-    index.setEf(Math.min(400, Math.max(50, vectors.length * 2)));
+    const newIndex = new HierarchicalNSW("cosine", this.backend.dimensions);
+    newIndex.initIndex(vectors.length);
+    newIndex.setEf(Math.min(400, Math.max(50, vectors.length * 2)));
 
     const ids = Array.from({ length: vectors.length }, (_, i) => i);
-    ids.forEach((id, i) => index.addPoint(Array.from(vectors[i]), id));
-    this.index = index;
+    ids.forEach((id, i) => newIndex.addPoint(Array.from(vectors[i]), id));
 
-    log.info(`index built: ${this.skills.size} skills, ${this.backend.dimensions}d`);
+    if (gen === this.buildGeneration) {
+      this.skills = newSkills;
+      this.index = newIndex;
+      log.info(`index built: ${this.skills.size} skills, ${this.backend.dimensions}d`);
+    }
   }
 
   async search(query: string, topK: number): Promise<SearchResult[]> {
@@ -102,10 +117,10 @@ export class SkillIndex {
     skillProvider: () => SkillEntry[] | Promise<SkillEntry[]>,
     opts: WatchOptions = {},
   ): ReturnType<typeof watch> | null {
-    this.unwatch();
+    if (this.watchers.has(dir)) return this.watchers.get(dir)!;
     try {
       const w = watch(dir, { persistent: false, recursive: true }, (_event, filename) => {
-        if (!filename?.endsWith(".md")) return;
+        if (!filename?.endsWith("SKILL.md")) return;
         if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
         this.rebuildTimer = setTimeout(async () => {
           try {
@@ -116,8 +131,7 @@ export class SkillIndex {
           }
         }, opts.debounceMs ?? 2000);
       });
-      this.watcher = w;
-      this.watchDir = dir;
+      this.watchers.set(dir, w);
       return w;
     } catch {
       return null;
@@ -129,10 +143,9 @@ export class SkillIndex {
       clearTimeout(this.rebuildTimer);
       this.rebuildTimer = null;
     }
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = null;
-      this.watchDir = null;
+    if (this.watchers.size > 0) {
+      for (const w of this.watchers.values()) w.close();
+      this.watchers.clear();
       return true;
     }
     return false;

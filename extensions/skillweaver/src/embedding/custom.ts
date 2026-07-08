@@ -31,6 +31,7 @@ export class CustomEmbedding implements EmbeddingBackend {
     const body = JSON.stringify({
       model: this.model,
       input: texts,
+      encoding_format: "float",
     });
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -42,9 +43,14 @@ export class CustomEmbedding implements EmbeddingBackend {
     }
 
     const json = await response.json() as { data: Array<{ embedding: number[]; index: number }> };
-    return json.data
-      .sort((a, b) => a.index - b.index)
-      .map((item) => new Float32Array(item.embedding));
+    const sorted = json.data.sort((a, b) => a.index - b.index);
+    if (sorted.length > 0 && sorted[0].embedding.length !== this.dimensions) {
+      throw new Error(
+        `CustomEmbedding: dimension mismatch — expected ${this.dimensions} but endpoint returned ${sorted[0].embedding.length}. ` +
+        `Configure 'embedding.dimensions' to match your endpoint's output.`
+      );
+    }
+    return sorted.map((item) => new Float32Array(item.embedding));
   }
 
   async embedSingle(text: string): Promise<Float32Array> {

@@ -47,6 +47,7 @@ export function createCollectHandler(opts: HandlerOptions) {
       if (pass1Result.subTasks.length === 0) return {};
 
       let subTasks: string[];
+      let actualPass: 1 | 2 = 1;
 
       if (opts.sadEnabled && pass1Result.subTasks.length > 0) {
         const hints = await opts.retriever.buildHintSet(pass1Result.subTasks);
@@ -55,7 +56,12 @@ export function createCollectHandler(opts: HandlerOptions) {
           const pass2Timer = setTimeout(() => pass2Controller.abort(), timeoutMs);
           const pass2Result = await opts.decomposer.decompose(text, hints, undefined, pass2Controller.signal);
           clearTimeout(pass2Timer);
-          subTasks = pass2Result.subTasks.length > 0 ? pass2Result.subTasks : pass1Result.subTasks;
+          if (pass2Result.subTasks.length > 0) {
+            subTasks = pass2Result.subTasks;
+            actualPass = 2;
+          } else {
+            subTasks = pass1Result.subTasks;
+          }
         } else {
           subTasks = pass1Result.subTasks;
         }
@@ -70,7 +76,7 @@ export function createCollectHandler(opts: HandlerOptions) {
         log.info("routing complete", {
           subTasks: subTasks.length,
           skillsMatched: results.length,
-          pass: opts.sadEnabled ? 2 : 1,
+          pass: actualPass,
         });
       }
 

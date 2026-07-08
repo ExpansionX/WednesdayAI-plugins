@@ -17,6 +17,10 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function sanitizeMarkdown(text: string): string {
+  return text.replace(/[#*_[\]`]/g, "\\$&").replace(/\n/g, " ").slice(0, 200);
+}
+
 export function formatSkillContext(
   skills: SearchResult[],
   query: string,
@@ -32,8 +36,8 @@ export function formatSkillContext(
   ];
 
   for (const skill of skills) {
-    lines.push(`### ${skill.name}`);
-    lines.push(skill.description);
+    lines.push(`### ${sanitizeMarkdown(skill.name)}`);
+    lines.push(sanitizeMarkdown(skill.description));
     lines.push("");
   }
 
