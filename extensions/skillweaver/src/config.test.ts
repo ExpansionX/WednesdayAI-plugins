@@ -6,7 +6,7 @@ const defaults = {
   decomposer: { provider: "openrouter", model: "qwen/qwen2.5-7b-instruct", temperature: 0.1, maxTokens: 256 },
   embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small" },
   retrieval: { topK: 3, hintSize: 15, minQueryLength: 20 },
-  sad: { enabled: true, maxIterations: 1 },
+  sad: { enabled: true },
   skills: { dirs: [] },
 } as const;
 

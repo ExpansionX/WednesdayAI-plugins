@@ -137,7 +137,7 @@ export class Decomposer {
       } else {
         if (this.config.apiKey) headers.Authorization = `Bearer ${this.config.apiKey}`;
         if (isOpenRouter) {
-          headers["HTTP-Referer"] = "wednesdayai-skillweaver";
+          headers["HTTP-Referer"] = "https://github.com/ExpansionX/WednesdayAI-plugins";
         }
         body = JSON.stringify({
           model: this.config.model,

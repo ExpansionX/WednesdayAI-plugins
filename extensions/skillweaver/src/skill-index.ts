@@ -1,6 +1,7 @@
 // @ts-expect-error — plugin-sdk not installed in this workspace
 import { createSubsystemLogger } from "wednesdayai/plugin-sdk";
-import { watch } from "node:fs";
+import { watch, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { EmbeddingBackend, SkillEntry, SearchResult, IndexedSkill } from "./embedding/types.js";
 
 const log = createSubsystemLogger("skillweaver/index");
@@ -153,8 +154,6 @@ export class SkillIndex {
 
       if (!useRecursive) {
         try {
-          const { readdirSync } = require("node:fs");
-          const { join } = require("node:path");
           for (const entry of readdirSync(dir, { withFileTypes: true })) {
             if (entry.isDirectory()) {
               const subDir = join(dir, entry.name);

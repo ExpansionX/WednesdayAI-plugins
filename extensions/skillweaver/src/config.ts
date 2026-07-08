@@ -22,7 +22,6 @@ export interface SkillWeaverConfig {
   };
   sad: {
     enabled: boolean;
-    maxIterations: number;
   };
   skills: {
     dirs?: string[];
@@ -49,7 +48,6 @@ const DEFAULTS = {
   },
   sad: {
     enabled: true,
-    maxIterations: 1,
   },
   skills: {
     dirs: [] as string[],
@@ -79,7 +77,7 @@ export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
   function toBool(v: unknown, fallback: boolean): boolean {
     if (typeof v === "boolean") return v;
     if (typeof v === "string") {
-      const trimmed = v.trim();
+      const trimmed = v.trim().toLowerCase();
       return trimmed !== "false" && trimmed !== "0" && trimmed !== "";
     }
     if (v === undefined || v === null) return fallback;
