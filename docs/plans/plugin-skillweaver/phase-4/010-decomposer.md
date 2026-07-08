@@ -8,6 +8,7 @@ parallel: false
 conflicts_with: []
 files:
   - extensions/skillweaver/src/decomposer.ts
+  - extensions/skillweaver/src/decomposer.test.ts
 irreversible: false
 scope_test: "extensions/skillweaver/src/decomposer.test.ts"
 allowed_change: create
