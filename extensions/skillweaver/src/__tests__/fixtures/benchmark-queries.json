@@ -1,0 +1,355 @@
+{
+  "description": "50 compositional queries for SkillWeaver benchmark — 25 easy (2 skills, 2 categories), 15 medium (3 skills, 3 categories), 10 hard (4-5 skills, 4-5 categories)",
+  "queries": [
+    {
+      "id": "E01",
+      "difficulty": "easy",
+      "query": "Create a GitHub pull request and notify the team on Slack",
+      "expectedSkills": ["github", "slack"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E02",
+      "difficulty": "easy",
+      "query": "Fetch the weather forecast and send it to Telegram",
+      "expectedSkills": ["weather", "telegram"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E03",
+      "difficulty": "easy",
+      "query": "Search for files in the repo and create a GitHub issue with the results",
+      "expectedSkills": ["exec", "github"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E04",
+      "difficulty": "easy",
+      "query": "Read a CSV file and generate a summary chart",
+      "expectedSkills": ["read-write", "image-gen"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E05",
+      "difficulty": "easy",
+      "query": "Check the latest GitHub notifications and reply on Slack",
+      "expectedSkills": ["github", "slack"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E06",
+      "difficulty": "easy",
+      "query": "Download a file from a URL and save it to disk",
+      "expectedSkills": ["web-fetch", "read-write"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E07",
+      "difficulty": "easy",
+      "query": "Run a shell command and post the output to Discord",
+      "expectedSkills": ["exec", "discord"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E08",
+      "difficulty": "easy",
+      "query": "Create a calendar event and send an email reminder",
+      "expectedSkills": ["calendar", "email"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E09",
+      "difficulty": "easy",
+      "query": "Translate a text file and save the translation",
+      "expectedSkills": ["read-write", "read-write"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E10",
+      "difficulty": "easy",
+      "query": "Fetch a web page and extract all links",
+      "expectedSkills": ["web-fetch", "web-fetch"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E11",
+      "difficulty": "easy",
+      "query": "Create a GitHub release and notify on Slack",
+      "expectedSkills": ["github", "slack"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E12",
+      "difficulty": "easy",
+      "query": "Read a JSON config file and validate its schema",
+      "expectedSkills": ["read-write", "read-write"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E13",
+      "difficulty": "easy",
+      "query": "List all Docker containers and send status to Telegram",
+      "expectedSkills": ["docker", "telegram"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E14",
+      "difficulty": "easy",
+      "query": "Query a database and export results to CSV",
+      "expectedSkills": ["database", "read-write"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E15",
+      "difficulty": "easy",
+      "query": "Take a screenshot of a webpage and email it",
+      "expectedSkills": ["browser", "email"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E16",
+      "difficulty": "easy",
+      "query": "Parse a log file and count error occurrences",
+      "expectedSkills": ["read-write", "math"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E17",
+      "difficulty": "easy",
+      "query": "Create a Telegram bot command and test it",
+      "expectedSkills": ["telegram", "exec"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E18",
+      "difficulty": "easy",
+      "query": "Fetch RSS feeds and summarize articles",
+      "expectedSkills": ["web-fetch", "read-write"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E19",
+      "difficulty": "easy",
+      "query": "Generate a QR code image and save it",
+      "expectedSkills": ["image-gen", "read-write"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E20",
+      "difficulty": "easy",
+      "query": "Check disk usage and alert on Slack if above threshold",
+      "expectedSkills": ["exec", "slack"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E21",
+      "difficulty": "easy",
+      "query": "Read iMessage history and count messages per contact",
+      "expectedSkills": ["imessage", "math"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E22",
+      "difficulty": "easy",
+      "query": "Create a GitHub branch and push changes",
+      "expectedSkills": ["github", "exec"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E23",
+      "difficulty": "easy",
+      "query": "Fetch API data and format as markdown table",
+      "expectedSkills": ["web-fetch", "read-write"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E24",
+      "difficulty": "easy",
+      "query": "Run tests and post results to Discord",
+      "expectedSkills": ["exec", "discord"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "E25",
+      "difficulty": "easy",
+      "query": "Convert a document to PDF and email it",
+      "expectedSkills": ["pdf", "email"],
+      "expectedSubtasks": 2
+    },
+    {
+      "id": "M01",
+      "difficulty": "medium",
+      "query": "Clone a repo, run linter, and create a GitHub issue with results",
+      "expectedSkills": ["github", "exec", "github"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M02",
+      "difficulty": "medium",
+      "query": "Fetch weather data, generate a chart, and post to Slack",
+      "expectedSkills": ["weather", "image-gen", "slack"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M03",
+      "difficulty": "medium",
+      "query": "Read a CSV, compute statistics, and save results as JSON",
+      "expectedSkills": ["read-write", "math", "read-write"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M04",
+      "difficulty": "medium",
+      "query": "Search GitHub issues, filter by label, and notify on Telegram",
+      "expectedSkills": ["github", "github", "telegram"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M05",
+      "difficulty": "medium",
+      "query": "Scrape a webpage, extract data, and save to database",
+      "expectedSkills": ["web-fetch", "web-fetch", "database"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M06",
+      "difficulty": "medium",
+      "query": "Run a Docker container, collect logs, and send to Slack",
+      "expectedSkills": ["docker", "exec", "slack"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M07",
+      "difficulty": "medium",
+      "query": "Read iMessage history, analyze sentiment, and generate report",
+      "expectedSkills": ["imessage", "math", "read-write"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M08",
+      "difficulty": "medium",
+      "query": "Fetch calendar events, check conflicts, and send email alerts",
+      "expectedSkills": ["calendar", "calendar", "email"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M09",
+      "difficulty": "medium",
+      "query": "Create a GitHub wiki page with API documentation",
+      "expectedSkills": ["github", "read-write", "web-fetch"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M10",
+      "difficulty": "medium",
+      "query": "Monitor a website, detect changes, and notify on Discord",
+      "expectedSkills": ["web-fetch", "web-fetch", "discord"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M11",
+      "difficulty": "medium",
+      "query": "Generate an image from text description and post to Telegram",
+      "expectedSkills": ["image-gen", "image-gen", "telegram"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M12",
+      "difficulty": "medium",
+      "query": "Query database for user stats, generate charts, and email report",
+      "expectedSkills": ["database", "image-gen", "email"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M13",
+      "difficulty": "medium",
+      "query": "Parse PDF document, extract tables, and save as CSV",
+      "expectedSkills": ["pdf", "pdf", "read-write"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M14",
+      "difficulty": "medium",
+      "query": "Run security scan on repo, format results, and create GitHub issue",
+      "expectedSkills": ["exec", "read-write", "github"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "M15",
+      "difficulty": "medium",
+      "query": "Export Slack channel history, analyze sentiment, and generate a report chart",
+      "expectedSkills": ["slack", "read-write", "image-gen"],
+      "expectedSubtasks": 3
+    },
+    {
+      "id": "H01",
+      "difficulty": "hard",
+      "query": "Collect data from 3 different APIs, merge and clean the datasets, run statistical analysis, visualize trends, and publish results to a GitHub wiki page",
+      "expectedSkills": ["web-fetch", "read-write", "math", "image-gen", "github"],
+      "expectedSubtasks": 5
+    },
+    {
+      "id": "H02",
+      "difficulty": "hard",
+      "query": "Clone a repo, check out a feature branch, run all linters, fix auto-fixable issues, create a PR, and notify the team on Slack and Discord",
+      "expectedSkills": ["github", "exec", "github", "slack", "discord"],
+      "expectedSubtasks": 4
+    },
+    {
+      "id": "H03",
+      "difficulty": "hard",
+      "query": "Download a dataset, train a simple model, evaluate it, save the model and metrics, and send an email with the results",
+      "expectedSkills": ["web-fetch", "exec", "read-write", "email"],
+      "expectedSubtasks": 5
+    },
+    {
+      "id": "H04",
+      "difficulty": "hard",
+      "query": "Check all connected channels, collect unread message counts, aggregate by platform, format a dashboard image, and post it to Telegram",
+      "expectedSkills": ["telegram", "discord", "slack", "image-gen", "telegram"],
+      "expectedSubtasks": 4
+    },
+    {
+      "id": "H05",
+      "difficulty": "hard",
+      "query": "Read a technical paper PDF, extract methodology section, reproduce the experiment setup in code, run the benchmark, compare results with the paper's claims, and write a replication report",
+      "expectedSkills": ["pdf", "read-write", "exec", "math", "read-write"],
+      "expectedSubtasks": 5
+    },
+    {
+      "id": "H06",
+      "difficulty": "hard",
+      "query": "Query the database for user activity, find top users, check GitHub contribution graphs, cross-reference with Slack messages, and generate a comprehensive activity report",
+      "expectedSkills": ["database", "github", "slack", "read-write"],
+      "expectedSubtasks": 4
+    },
+    {
+      "id": "H07",
+      "difficulty": "hard",
+      "query": "Monitor running Docker containers, collect resource metrics, identify anomalies, restart unhealthy containers, log the incident, and notify via email and Telegram",
+      "expectedSkills": ["docker", "exec", "read-write", "email", "telegram"],
+      "expectedSubtasks": 4
+    },
+    {
+      "id": "H08",
+      "difficulty": "hard",
+      "query": "Set up a new project: init git repo, create directory structure, write config files, add CI pipeline, install dependencies, scaffold tests, and push to GitHub with a Slack announcement",
+      "expectedSkills": ["github", "read-write", "exec", "slack"],
+      "expectedSubtasks": 5
+    },
+    {
+      "id": "H09",
+      "difficulty": "hard",
+      "query": "Scrape a competitor website, extract pricing data, compare with our pricing, generate a summary table, and save as PDF for review",
+      "expectedSkills": ["web-fetch", "browser", "read-write", "pdf"],
+      "expectedSubtasks": 4
+    },
+    {
+      "id": "H10",
+      "difficulty": "hard",
+      "query": "Ingest iMessage history, identify contacts with most messages, filter by date range, compute reply time distributions, generate charts, and export as a markdown report",
+      "expectedSkills": ["imessage", "read-write", "math", "image-gen", "read-write"],
+      "expectedSubtasks": 5
+    }
+  ]
+}

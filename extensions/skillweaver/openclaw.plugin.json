@@ -1,0 +1,182 @@
+{
+  "id": "skillweaver",
+  "name": "SkillWeaver",
+  "description": "Compositional skill routing: decompose queries, retrieve relevant skills, inject into context via context.collect hook.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master on/off switch."
+      },
+      "decomposer": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "default": "openrouter",
+            "enum": ["openrouter", "openai", "anthropic", "openai-compatible"],
+            "description": "LLM provider for the decomposition model."
+          },
+          "model": {
+            "type": "string",
+            "default": "qwen/qwen2.5-7b-instruct",
+            "description": "Model used for query decomposition."
+          },
+          "apiKey": {
+            "type": ["string", "null"],
+            "description": "API key override. If null, uses agent's provider credentials."
+          },
+          "baseUrl": {
+            "type": ["string", "null"],
+            "description": "Base URL for openai-compatible endpoints."
+          },
+          "temperature": {
+            "type": "number",
+            "default": 0.1,
+            "minimum": 0,
+            "maximum": 2
+          },
+          "maxTokens": {
+            "type": "number",
+            "default": 256,
+            "minimum": 50,
+            "maximum": 1024
+          }
+        }
+      },
+      "embedding": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "type": "string",
+            "default": "local",
+            "enum": ["local", "cloud", "custom"],
+            "description": "Embedding backend: local (Xenova/transformers), cloud (OpenAI), custom (OpenAI-compatible endpoint)."
+          },
+          "model": {
+            "type": "string",
+            "default": "all-MiniLM-L6-v2",
+            "description": "Model name for the local backend."
+          },
+          "cloudModel": {
+            "type": "string",
+            "default": "text-embedding-3-small",
+            "description": "Model name for the cloud (OpenAI) backend."
+          },
+          "customModel": {
+            "type": "string",
+            "default": "custom",
+            "description": "Model name sent to the custom backend endpoint."
+          },
+          "cloudDimensions": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 4096,
+            "description": "Vector dimensions for the cloud (OpenAI) backend. If null, defaults to 1536."
+          },
+          "customDimensions": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 4096,
+            "description": "Vector dimensions for the custom backend. If null, defaults to 384."
+          },
+          "endpoint": {
+            "type": ["string", "null"],
+            "description": "OpenAI-compatible endpoint URL for the custom backend."
+          },
+          "apiKey": {
+            "type": ["string", "null"],
+            "description": "API key for the custom backend."
+          }
+        }
+      },
+      "retrieval": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "topK": {
+            "type": "integer",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Number of skills returned per sub-task."
+          },
+          "hintSize": {
+            "type": "integer",
+            "default": 15,
+            "minimum": 5,
+            "maximum": 50,
+            "description": "Total hints passed to SAD Pass-2."
+          },
+          "minQueryLength": {
+            "type": "integer",
+            "default": 20,
+            "minimum": 5,
+            "maximum": 500,
+            "description": "Skip routing for queries shorter than this."
+          },
+          "retrievalTimeoutMs": {
+            "type": "integer",
+            "default": 30000,
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "Maximum milliseconds the retrieval step may run before being aborted."
+          }
+        }
+      },
+      "sad": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable SAD (2-pass). False = Pass-1 only."
+          }
+        }
+      },
+      "skills": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dirs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Custom directories to scan for SKILL.md files. If empty, defaults to ~/.openclaw/skills."
+          }
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enable SkillWeaver",
+      "help": "Master on/off switch for automatic skill routing."
+    },
+    "decomposer.provider": {
+      "label": "Decomposer Provider",
+      "help": "LLM provider for the decomposition model."
+    },
+    "decomposer.model": {
+      "label": "Decomposer Model",
+      "help": "Model used for query decomposition (smaller/cheaper recommended)."
+    },
+    "embedding.backend": {
+      "label": "Embedding Backend",
+      "help": "Where to compute embeddings: locally, via OpenAI cloud, or custom endpoint."
+    },
+    "sad.enabled": {
+      "label": "SAD (2-Pass)",
+      "help": "Enable Skill-Aware Decomposition for improved accuracy."
+    },
+    "skills.dirs": {
+      "label": "Skill Directories",
+      "help": "Custom directories to scan for SKILL.md files. Leave empty for default (~/.openclaw/skills)."
+    }
+  }
+}
