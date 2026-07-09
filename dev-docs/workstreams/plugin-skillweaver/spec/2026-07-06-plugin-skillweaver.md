@@ -1,6 +1,6 @@
 ---
 doc_type: spec
-status: active
+status: shipped
 id: TRK-005
 workstream: plugin-skillweaver
 change_kind: behaviour

@@ -1,16 +1,17 @@
 ---
 doc_type: workstream
-status: complete
+status: shipped
 id: TRK-005
 workstream: plugin-skillweaver
 title: "Plugin: SkillWeaver — Compositional Skill Routing for WednesdayAI"
 created: 2026-07-06
 updated: 2026-07-09
-staging_pointers:
   spec: docs/superpowers/specs/2026-07-06-plugin-skillweaver.md
   plans:
-    - docs/plans/plugin-skillweaver/
   tasks: []
+staging_pointers:
+  - docs/plans/plugin-skillweaver
+  - docs/superpowers/specs/2026-07-06-plugin-skillweaver.md
 ---
 
 # plugin-skillweaver
