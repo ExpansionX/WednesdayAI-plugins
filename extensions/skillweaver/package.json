@@ -27,7 +27,7 @@
     "vitest": "^4.0.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "openclaw": {
     "extensions": [
