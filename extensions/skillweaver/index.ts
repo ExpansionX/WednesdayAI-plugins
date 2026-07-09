@@ -167,8 +167,8 @@ const plugin = {
     api.on("gateway_stop", async () => {
       if (disposed) return;
       disposed = true;
-      decomposer.dispose();
-      index.dispose();
+      try { decomposer.dispose(); } catch { /* ignore */ }
+      try { index.dispose(); } catch { /* ignore */ }
       if (initPromise) {
         await initPromise.catch(() => {});
       }

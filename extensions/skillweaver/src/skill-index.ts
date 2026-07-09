@@ -211,6 +211,10 @@ export class SkillIndex {
       });
       w.on("error", (err) => {
         log.warn("watcher error", { dir, error: String(err) });
+        if (this.rebuildTimer) {
+          clearTimeout(this.rebuildTimer);
+          this.rebuildTimer = null;
+        }
         for (const [key, watcher] of this.watchers) {
           if (key === dir || key.startsWith(dir + "/")) {
             watcher.close();
