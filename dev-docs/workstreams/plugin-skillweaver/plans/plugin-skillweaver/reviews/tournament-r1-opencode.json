@@ -1,0 +1,29 @@
+{
+  "argv": [
+    "opencode",
+    "run",
+    "--dir",
+    "/Users/david/Code/WednesdayAI-plugins",
+    "--agent",
+    "plan",
+    "--format",
+    "json",
+    "--model",
+    "ollama-cloud/glm-5.2",
+    "Read the full task instructions from /Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-find.md and execute them."
+  ],
+  "cwd": "/Users/david/Code/WednesdayAI-plugins",
+  "exit_code": 0,
+  "finished_at": "2026-07-06T06:25:46.533446+00:00",
+  "notes": [],
+  "prompt_file": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-find.md",
+  "raw_log": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-r1-opencode.raw.log",
+  "report": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-r1-opencode.md",
+  "safety": "read-only",
+  "schema_version": "dr.executor.panel.v1",
+  "started_at": "2026-07-06T06:25:41.863280+00:00",
+  "status": "ok",
+  "task": "plan-review",
+  "tool": "opencode",
+  "tool_version": "1.17.13"
+}

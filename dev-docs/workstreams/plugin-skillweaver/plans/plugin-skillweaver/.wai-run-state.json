@@ -1,0 +1,35 @@
+{
+  "topic": "plugin-skillweaver",
+  "repoRoot": "/Users/david/Code/WednesdayAI-plugins-skillweaver",
+  "completedTaskIds": [],
+  "failedTaskIds": [
+    "001"
+  ],
+  "pendingTaskIds": [
+    "002",
+    "003",
+    "004",
+    "005",
+    "006",
+    "007",
+    "008",
+    "009",
+    "010",
+    "011",
+    "012",
+    "013",
+    "014",
+    "015",
+    "016",
+    "017",
+    "018"
+  ],
+  "currentTaskId": null,
+  "blockedTaskIds": [],
+  "attempts": "001=1",
+  "reportJournal": "001\tfailed\t1\tclaude\torchestrator-abort:deadlock: no ready task and dispatch stalled",
+  "attentionItems": [],
+  "runId": "20260707T212425Z-89115",
+  "phase": "Failed",
+  "lastUpdated": "2026-07-07T21:31:06Z"
+}

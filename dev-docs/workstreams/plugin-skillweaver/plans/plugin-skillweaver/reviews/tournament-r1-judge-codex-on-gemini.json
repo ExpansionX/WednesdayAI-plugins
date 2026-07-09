@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "codex",
+    "exec",
+    "-C",
+    "/Users/david/Code/WednesdayAI-plugins",
+    "--sandbox",
+    "read-only",
+    "--json",
+    "-"
+  ],
+  "cwd": "/Users/david/Code/WednesdayAI-plugins",
+  "exit_code": 0,
+  "finished_at": "2026-07-06T06:34:32.903060+00:00",
+  "notes": [],
+  "prompt_file": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-judge-codex-judges-gemini.md",
+  "raw_log": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-r1-judge-codex-on-gemini.raw.log",
+  "report": "/Users/david/Code/WednesdayAI-plugins/docs/plans/plugin-skillweaver/reviews/tournament-r1-judge-codex-on-gemini.md",
+  "safety": "read-only",
+  "schema_version": "dr.executor.panel.v1",
+  "started_at": "2026-07-06T06:31:22.013582+00:00",
+  "status": "ok",
+  "task": "plan-review",
+  "tool": "codex",
+  "tool_version": "codex-cli 0.142.5"
+}

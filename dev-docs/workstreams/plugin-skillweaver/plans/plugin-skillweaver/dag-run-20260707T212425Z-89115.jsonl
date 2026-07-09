@@ -1,0 +1,1 @@
+{"task_id": "001", "status": "failed", "attempts": 1, "executor": "claude", "stop_reason": "orchestrator-abort:deadlock: no ready task and dispatch stalled"}

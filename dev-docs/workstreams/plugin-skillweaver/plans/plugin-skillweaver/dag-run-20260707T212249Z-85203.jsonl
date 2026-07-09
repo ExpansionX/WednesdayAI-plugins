@@ -1,0 +1,1 @@
+{"task_id": "001", "status": "failed", "attempts": 0, "executor": "claude", "stop_reason": "precondition-violated:not-retried: extensions/skillweaver/package.json already exists (introduced by 4514841)"}
