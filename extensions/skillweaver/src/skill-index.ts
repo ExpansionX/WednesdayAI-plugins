@@ -6,6 +6,12 @@ import type { EmbeddingBackend, SkillEntry, SearchResult, IndexedSkill } from ".
 
 const log = createSubsystemLogger("skillweaver/index");
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("SkillIndex: operation aborted");
+  }
+}
+
 interface HnswIndex {
   initIndex(num: number): void;
   setEf(ef: number): void;
@@ -72,14 +78,6 @@ export class SkillIndex {
       if (existing) existing.vector = vectors[i];
     }
 
-    if (vectors.length === 0) {
-      if (gen === this.buildGeneration) {
-        this.skills = newSkills;
-        this.index = null;
-      }
-      return;
-    }
-
     const { HierarchicalNSW } = await import("hnswlib-node");
     const newIndex = new HierarchicalNSW("cosine", this.backend.dimensions);
     newIndex.initIndex(vectors.length);
@@ -96,10 +94,12 @@ export class SkillIndex {
     }
   }
 
-  async search(query: string, topK: number): Promise<SearchResult[]> {
+  async search(query: string, topK: number, signal?: AbortSignal): Promise<SearchResult[]> {
+    throwIfAborted(signal);
     if (this.disposed || !this.index || this.skills.size === 0) return [];
 
-    const queryVector = await this.backend.embedSingle(query);
+    const queryVector = await this.backend.embedSingle(query, signal);
+    throwIfAborted(signal);
 
     const index = this.index;
     const skills = this.skills;
@@ -187,7 +187,7 @@ export class SkillIndex {
           const subW = watch(subDir, { persistent: false }, (_event, filename) => {
             if (filename === "SKILL.md") scheduleRebuild();
           });
-          subW.on("error", () => { this.watchers.delete(subDir); });
+          subW.on("error", () => { subW.close(); this.watchers.delete(subDir); });
           if (this.disposed || !this.watchers.has(dir)) {
             subW.close();
             return;
@@ -211,7 +211,12 @@ export class SkillIndex {
       });
       w.on("error", (err) => {
         log.warn("watcher error", { dir, error: String(err) });
-        this.unwatch();
+        for (const [key, watcher] of this.watchers) {
+          if (key === dir || key.startsWith(dir + "/")) {
+            watcher.close();
+            this.watchers.delete(key);
+          }
+        }
       });
       this.watchers.set(dir, w);
 

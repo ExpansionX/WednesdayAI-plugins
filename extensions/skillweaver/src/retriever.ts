@@ -9,8 +9,14 @@ export interface RetrieverOptions {
 }
 
 export interface Retriever {
-  retrieve(subTasks: string[]): Promise<SearchResult[]>;
-  buildHintSet(subTasks: string[]): Promise<HintEntry[]>;
+  retrieve(subTasks: string[], signal?: AbortSignal): Promise<SearchResult[]>;
+  buildHintSet(subTasks: string[], signal?: AbortSignal): Promise<HintEntry[]>;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Retriever: operation aborted");
+  }
 }
 
 export function createRetriever(index: SkillIndex, opts: RetrieverOptions): Retriever {
@@ -23,13 +29,15 @@ export function createRetriever(index: SkillIndex, opts: RetrieverOptions): Retr
   const maxResults = opts.maxResults ?? hintSize;
 
   return {
-    async retrieve(subTasks: string[]): Promise<SearchResult[]> {
+    async retrieve(subTasks: string[], signal?: AbortSignal): Promise<SearchResult[]> {
       if (subTasks.length === 0) return [];
       const seen = new Set<string>();
       const allResults: SearchResult[] = [];
 
       for (const task of subTasks) {
-        const results = await index.search(task, topK);
+        throwIfAborted(signal);
+        const results = await index.search(task, topK, signal);
+        throwIfAborted(signal);
         for (const result of results) {
           if (!seen.has(result.name) && result.score >= minScore) {
             seen.add(result.name);
@@ -43,13 +51,15 @@ export function createRetriever(index: SkillIndex, opts: RetrieverOptions): Retr
       return allResults.slice(0, cap);
     },
 
-    async buildHintSet(subTasks: string[]): Promise<HintEntry[]> {
+    async buildHintSet(subTasks: string[], signal?: AbortSignal): Promise<HintEntry[]> {
       if (subTasks.length === 0) return [];
       const seen = new Set<string>();
       const scored: Array<HintEntry & { score: number }> = [];
 
       for (const task of subTasks) {
-        const results = await index.search(task, Math.min(topK, Math.ceil(hintSize / subTasks.length)));
+        throwIfAborted(signal);
+        const results = await index.search(task, Math.min(topK, Math.ceil(hintSize / subTasks.length)), signal);
+        throwIfAborted(signal);
         for (const result of results) {
           if (!seen.has(result.name) && result.score >= minScore) {
             seen.add(result.name);

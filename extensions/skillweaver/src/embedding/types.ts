@@ -1,8 +1,8 @@
 export interface EmbeddingBackend {
   readonly id: string;
   readonly dimensions: number;
-  embed(texts: string[]): Promise<Float32Array[]>;
-  embedSingle(text: string): Promise<Float32Array>;
+  embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]>;
+  embedSingle(text: string, signal?: AbortSignal): Promise<Float32Array>;
   dispose(): void | Promise<void>;
 }
 

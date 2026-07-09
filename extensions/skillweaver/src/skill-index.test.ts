@@ -93,6 +93,18 @@ describe("SkillIndex", () => {
       const results = await index.search("query", 10);
       expect(results.length).toBeLessThanOrEqual(2);
     });
+
+    it("passes caller abort signal to the embedding backend", async () => {
+      const ac = new AbortController();
+      const embedSingle = vi.fn().mockResolvedValue(new Float32Array(DIM));
+      const backend: EmbeddingBackend = { ...mockBackend, embedSingle };
+      const index = new SkillIndex(backend);
+      await index.build(sampleSkills.slice(0, 2));
+
+      await index.search("query", 1, ac.signal);
+
+      expect(embedSingle).toHaveBeenCalledWith("query", ac.signal);
+    });
   });
 
   describe("getSkill()", () => {

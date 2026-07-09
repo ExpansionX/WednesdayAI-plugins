@@ -116,6 +116,33 @@ describe("CustomEmbedding", () => {
     await expect(backend.embed(["test"])).rejects.toThrow(/dimension mismatch/);
   });
 
+  it("throws when response count does not match input count", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: Array(384).fill(0.1), index: 0 }],
+      }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings" });
+    await expect(backend.embed(["one", "two"])).rejects.toThrow(/expected 2 embeddings/);
+  });
+
+  it("checks every returned embedding dimension", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          { embedding: Array(384).fill(0.1), index: 0 },
+          { embedding: Array(256).fill(0.2), index: 1 },
+        ],
+      }),
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings" });
+    await expect(backend.embed(["one", "two"])).rejects.toThrow(/dimension mismatch/);
+  });
+
   it("embedSingle throws when embed returns empty data", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -123,7 +150,7 @@ describe("CustomEmbedding", () => {
     });
 
     const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings" });
-    await expect(backend.embedSingle("test")).rejects.toThrow(/empty/);
+    await expect(backend.embedSingle("test")).rejects.toThrow(/expected 1 embeddings/);
   });
 
   it("passes an AbortSignal to fetch for timeout", async () => {
@@ -141,6 +168,19 @@ describe("CustomEmbedding", () => {
       expect.any(String),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("combines caller abort signal with backend timeout", async () => {
+    const ac = new AbortController();
+    mockFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
+      const signal = init.signal as AbortSignal;
+      ac.abort(new Error("caller aborted"));
+      expect(signal.aborted).toBe(true);
+      throw new DOMException("Aborted", "AbortError");
+    });
+
+    const backend = new CustomEmbedding({ endpoint: "http://localhost:8080/v1/embeddings" });
+    await expect(backend.embed(["test"], ac.signal)).rejects.toThrow(/Aborted/);
   });
 
   it("sends custom model name in request body", async () => {

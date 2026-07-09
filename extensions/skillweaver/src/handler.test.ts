@@ -215,7 +215,7 @@ describe("createCollectHandler", () => {
 
     await handler(baseEvent);
     // retriever should receive only the non-empty subtask
-    expect(mockRetriever.retrieve).toHaveBeenCalledWith(["task1"]);
+    expect(mockRetriever.retrieve).toHaveBeenCalledWith(["task1"], expect.any(AbortSignal));
   });
 
   it("falls back to Pass-1 results when Pass-2 filtered is empty", async () => {
@@ -238,7 +238,7 @@ describe("createCollectHandler", () => {
 
     await handler(baseEvent);
     // Should use pass-1 subtasks since pass-2 filtered to empty
-    expect(mockRetriever.retrieve).toHaveBeenCalledWith(["task1"]);
+    expect(mockRetriever.retrieve).toHaveBeenCalledWith(["task1"], expect.any(AbortSignal));
   });
 
   it("skips SAD Pass-2 when hints are empty", async () => {
@@ -349,5 +349,31 @@ describe("createCollectHandler", () => {
 
     const result = await handler(baseEvent);
     expect(result).toEqual({});
+  });
+
+  it("aborts retriever work when retrieval timeout expires", async () => {
+    vi.useFakeTimers();
+    let capturedSignal: AbortSignal | undefined;
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: ["task1"], hints: [], pass: 1 });
+    mockRetriever.retrieve.mockImplementationOnce((_subTasks: string[], signal?: AbortSignal) => {
+      capturedSignal = signal;
+      return new Promise(() => {});
+    });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 5,
+      decomposerModel: "test",
+      retrievalTimeoutMs: 10,
+    });
+
+    const resultPromise = handler(baseEvent);
+    await vi.advanceTimersByTimeAsync(20);
+
+    await expect(resultPromise).resolves.toEqual({});
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal!.aborted).toBe(true);
   });
 });

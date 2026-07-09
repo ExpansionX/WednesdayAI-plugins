@@ -57,6 +57,7 @@ export function createCollectHandler(opts: HandlerOptions) {
     const timeoutMs = opts.decomposerTimeoutMs ?? 30000;
     const retrievalTimeoutMs = opts.retrievalTimeoutMs ?? 30000;
     const ac = new AbortController();
+    const retrievalAc = new AbortController();
     const timeoutId = setTimeout(() => ac.abort(), timeoutMs);
     const decomposerDeadline = Date.now() + timeoutMs;
     const remainingDecomposerMs = () => Math.max(1, decomposerDeadline - Date.now());
@@ -76,9 +77,10 @@ export function createCollectHandler(opts: HandlerOptions) {
 
       if (opts.sadEnabled && !ac.signal.aborted) {
         const hints = await withTimeout(
-          opts.retriever.buildHintSet(subTasks),
+          opts.retriever.buildHintSet(subTasks, retrievalAc.signal),
           retrievalTimeoutMs,
           "retriever.buildHintSet",
+          () => retrievalAc.abort(),
         );
         if (hints.length > 0 && !ac.signal.aborted) {
           const pass2Result = await withTimeout(
@@ -96,9 +98,10 @@ export function createCollectHandler(opts: HandlerOptions) {
       }
 
       const results = await withTimeout(
-        opts.retriever.retrieve(subTasks),
+        opts.retriever.retrieve(subTasks, retrievalAc.signal),
         retrievalTimeoutMs,
         "retriever.retrieve",
+        () => retrievalAc.abort(),
       );
       const contribution = formatSkillContext(results, subTasks, opts.decomposerModel);
 
@@ -116,6 +119,7 @@ export function createCollectHandler(opts: HandlerOptions) {
       return {};
     } finally {
       clearTimeout(timeoutId);
+      retrievalAc.abort();
     }
   };
 }

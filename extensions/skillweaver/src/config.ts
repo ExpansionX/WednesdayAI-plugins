@@ -76,7 +76,7 @@ export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
   const rawSkills = rawObj(raw.skills);
   const rawDirs = rawSkills.dirs;
   const dirs = typeof rawDirs === "string"
-    ? [rawDirs]
+    ? (rawDirs.length > 0 ? [rawDirs] : DEFAULTS.skills.dirs)
     : Array.isArray(rawDirs)
       ? rawDirs.filter((d): d is string => typeof d === "string" && d.length > 0)
       : DEFAULTS.skills.dirs;

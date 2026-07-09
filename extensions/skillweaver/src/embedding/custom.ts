@@ -6,6 +6,11 @@ const log = createSubsystemLogger("skillweaver/custom");
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_ERROR_BODY_LENGTH = 500;
 
+function timeoutSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 export interface CustomEmbeddingOptions {
   endpoint?: string | null;
   apiKey?: string | null;
@@ -38,7 +43,7 @@ export class CustomEmbedding implements EmbeddingBackend {
     }
   }
 
-  async embed(texts: string[]): Promise<Float32Array[]> {
+  async embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]> {
     if (this.disposed) throw new Error("CustomEmbedding: already disposed");
     const body = JSON.stringify({
       model: this.model,
@@ -53,7 +58,7 @@ export class CustomEmbedding implements EmbeddingBackend {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: timeoutSignal(this.timeoutMs, signal),
     });
     if (!response.ok) {
       const errBody = (await response.text().catch(() => "")).slice(0, MAX_ERROR_BODY_LENGTH);
@@ -65,13 +70,16 @@ export class CustomEmbedding implements EmbeddingBackend {
       throw new Error("CustomEmbedding: endpoint response missing 'data' array");
     }
     const sorted = json.data.sort((a, b) => a.index - b.index);
-    if (sorted.length > 0) {
-      if (!Array.isArray(sorted[0].embedding)) {
+    if (sorted.length !== texts.length) {
+      throw new Error(`CustomEmbedding: expected ${texts.length} embeddings but endpoint returned ${sorted.length}`);
+    }
+    for (const item of sorted) {
+      if (!Array.isArray(item.embedding)) {
         throw new Error("CustomEmbedding: endpoint response missing embedding array");
       }
-      if (sorted[0].embedding.length !== this.dimensions) {
+      if (item.embedding.length !== this.dimensions) {
         throw new Error(
-          `CustomEmbedding: dimension mismatch — expected ${this.dimensions} but endpoint returned ${sorted[0].embedding.length}. ` +
+          `CustomEmbedding: dimension mismatch — expected ${this.dimensions} but endpoint returned ${item.embedding.length}. ` +
           `Configure 'embedding.dimensions' to match your endpoint's output.`
         );
       }
@@ -84,8 +92,8 @@ export class CustomEmbedding implements EmbeddingBackend {
     });
   }
 
-  async embedSingle(text: string): Promise<Float32Array> {
-    const results = await this.embed([text]);
+  async embedSingle(text: string, signal?: AbortSignal): Promise<Float32Array> {
+    const results = await this.embed([text], signal);
     if (results.length === 0) throw new Error("CustomEmbedding: backend returned empty result");
     return results[0];
   }

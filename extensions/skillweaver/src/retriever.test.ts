@@ -62,6 +62,18 @@ describe("createRetriever", () => {
 
       expect(capped).toHaveLength(5);
     });
+
+    it("stops starting searches when the caller aborts", async () => {
+      const ac = new AbortController();
+      mockSearch.mockImplementationOnce(async () => {
+        ac.abort(new Error("stop"));
+        return [{ name: "github", description: "Git", location: "/x", source: "bundled", score: 0.9 }];
+      });
+
+      const retriever = createRetriever(mockIndex, { topK: 3 });
+      await expect(retriever.retrieve(["task a", "task b"], ac.signal)).rejects.toThrow("stop");
+      expect(mockSearch).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("buildHintSet()", () => {
@@ -92,6 +104,16 @@ describe("createRetriever", () => {
       const retriever = createRetriever(mockIndex, { topK: 20, hintSize: 5 });
       const hints = await retriever.buildHintSet(["task"]);
       expect(hints.length).toBeLessThanOrEqual(5);
+    });
+
+    it("passes the caller abort signal into index searches", async () => {
+      const ac = new AbortController();
+      mockSearch.mockResolvedValue([]);
+
+      const retriever = createRetriever(mockIndex, { topK: 3, hintSize: 5 });
+      await retriever.buildHintSet(["task"], ac.signal);
+
+      expect(mockSearch).toHaveBeenCalledWith("task", 3, ac.signal);
     });
   });
 });
