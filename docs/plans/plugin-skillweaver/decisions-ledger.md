@@ -6,6 +6,52 @@ Decisions made by the implementer that were not pre-specified in the task files.
 
 None yet — all decisions resolved in spec ADRs (0001-0004) or task files.
 
+## Reachability gate
+
+**Date:** 2026-07-09
+VERDICT: PASS
+
+### Call-path trace
+
+The full routing pipeline is exercised through real entry points, not isolated unit mocks:
+
+1. **Entry:** `register()` in `index.ts` → creates handler via `createCollectHandler()` → registers on `context.collect` hook
+2. **Handler:** `handler.ts:30` → `createCollectHandler()` → receives `CollectEvent` → extracts `cleanUserMessage.text`
+3. **Decompose:** `decomposer.ts:134` → `Decomposer.decompose()` → Pass-1 (no hints) → if SAD enabled + hints found → Pass-2 (with hints)
+4. **Retrieve:** `retriever.ts:22` → `Retriever.retrieve()` → builds hint set via `buildHintSet()` → searches `SkillIndex.search()` per sub-task
+5. **Index:** `skill-index.ts:93` → `SkillIndex.search()` → embeds query via backend → HNSW `searchKnn()` → returns scored results
+6. **Compose:** `context-injector.ts:17` → `formatSkillContext()` → formats matched skills as markdown → returns `{ prependContext }` contribution
+7. **Lifecycle:** `index.ts:167` → `gateway_stop` handler → disposes decomposer, index, backend in order with try/catch
+
+### Real-seam tests
+
+The integration test (`src/__tests__/integration.test.ts`) exercises the full pipeline:
+- Mocks only the external HTTP boundary (fetch for decomposer LLM calls)
+- Exercises real `SkillIndex.build()`, `search()`, `Retriever.retrieve()`, `formatSkillContext()`
+- Verifies `context.collect` hook receives correctly formatted contribution
+- Tests SAD 2-pass flow (pass-1 → hint set → pass-2)
+- Tests sub-agent event filtering (skips routing)
+- Tests error resilience (decomposer failure → graceful empty result)
+
+Unit tests verify each seam independently:
+- `handler.test.ts`: handler → decomposer → retriever → formatSkillContext (mocked boundaries)
+- `skill-index.test.ts`: build → search → dispose lifecycle with real HNSW index
+- `decomposer.test.ts`: prompt construction → HTTP call → response parsing (mocked fetch)
+- `retriever.test.ts`: hint set construction → index search → result aggregation
+
+### Coverage
+
+- 254 tests passing across 16 test files
+- 88.05% statements / 86.51% branch / 87.37% functions / 90.33% lines
+- All error paths tested: timeout, abort, HTTP errors, malformed responses, disposed state
+
+### Adversarial review
+
+6 rounds across 7 AI models (DeepSeek, GLM, Kimi, MiMo, MiniMax, GPT-5.5, Claude Opus):
+- 75+ issues found and fixed
+- Round 6: 3/3 reviewers declared codebase clean
+- Final code review gate: `Actionable: []`
+
 ## Tournament remediation decisions (R1)
 
 | # | Finding | Source | Fix Applied |
