@@ -22,7 +22,7 @@ function createMockApi(overrides: Partial<OpenClawPluginApi> = {}): OpenClawPlug
   return {
     pluginConfig: {},
     config: {
-      agents: { defaults: { systemPrompt: { sections: { skills: "names" } } } },
+      agents: { defaults: { systemPrompt: { sections: { skills: { mode: "names" } } } } },
     },
     logger: mockLogger,
     on: vi.fn(),

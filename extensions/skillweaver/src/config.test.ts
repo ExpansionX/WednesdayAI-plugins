@@ -258,22 +258,22 @@ describe("checkSkillsMode", () => {
   });
 
   it("returns 'names' when configured", () => {
-    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: "names" } } } } });
+    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: { mode: "names" } } } } } });
     expect(result).toBe("names");
   });
 
   it("returns 'off' when disabled", () => {
-    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: "off" } } } } });
+    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: { mode: "off" } } } } } });
     expect(result).toBe("off");
   });
 
   it("detects 'compact' mode", () => {
-    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: "compact" } } } } });
+    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: { mode: "compact" } } } } } });
     expect(result).toBe("compact");
   });
 
   it("returns 'default' for unrecognized mode string", () => {
-    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: "custom" } } } } });
+    const result = checkSkillsMode({ agents: { defaults: { systemPrompt: { sections: { skills: { mode: "custom" } } } } } });
     expect(result).toBe("default");
   });
 

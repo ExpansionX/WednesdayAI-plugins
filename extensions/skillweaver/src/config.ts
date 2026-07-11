@@ -173,7 +173,7 @@ export function checkSkillsMode(coreConfig: Record<string, unknown> | undefined)
   const defaults = skills?.defaults as Record<string, unknown> | undefined;
   const sysPrompt = defaults?.systemPrompt as Record<string, unknown> | undefined;
   const sections = sysPrompt?.sections as Record<string, unknown> | undefined;
-  const mode = sections?.skills as string | undefined;
+  const mode = (sections?.skills as Record<string, unknown> | undefined)?.mode as string | undefined;
   if (mode === "compact" || mode === "names" || mode === "off") return mode;
   return "default";
 }

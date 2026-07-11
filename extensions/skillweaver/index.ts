@@ -127,7 +127,7 @@ const plugin = {
       api.logger.warn(
         `skillweaver: detected skills mode "${skillsMode}". ` +
           `For optimal context savings, set ` +
-          `agents.defaults.systemPrompt.sections.skills to "names" in your openclaw config. ` +
+          `agents.defaults.systemPrompt.sections.skills.mode to "names" in your openclaw config. ` +
           `With "default" mode, full skill descriptions still appear in the system prompt ` +
           `alongside SkillWeaver's selective injection.`,
       );
