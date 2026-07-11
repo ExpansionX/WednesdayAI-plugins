@@ -232,6 +232,10 @@ If context is still high, check:
 - Sub-agent events are automatically skipped to prevent recursive routing
 - All LLM responses are validated before use
 
+### npm audit warnings
+
+`hnswlib-node` and `@xenova/transformers` pull in native addon build tooling (prebuild-install, node-gyp) that npm audit flags. These are transitive build-time dependencies, not runtime attack surface, and cannot be resolved by `npm audit fix`. If native dependency auditing is a concern, use `backend: "cloud"` or `backend: "custom"` to avoid loading the local embedding backend.
+
 ## Development
 
 ```bash
