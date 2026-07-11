@@ -62,6 +62,26 @@ Add to your `openclaw.json`:
 
 Defaults: local embedding (all-MiniLM-L6-v2), OpenRouter decomposer, SAD enabled, top-3 retrieval.
 
+### Optimize System Prompt (recommended)
+
+For maximum context savings, set the skills section to `"names"` in your agent config so full descriptions aren't duplicated:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "systemPrompt": {
+        "sections": {
+          "skills": {
+            "mode": "names"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 ### Cloud Embedding (OpenAI)
 
 ```json
