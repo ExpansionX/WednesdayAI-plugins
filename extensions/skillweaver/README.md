@@ -16,9 +16,17 @@ This happens automatically via the `context.collect` hook — no system prompt m
 
 ## Install
 
-SkillWeaver ships bundled with WednesdayAI. No additional install needed.
+Copy the plugin to your WednesdayAI extensions directory, then install and build:
 
-For development or manual install:
+```bash
+cp -r extensions/skillweaver ~/.openclaw/extensions/
+cd ~/.openclaw/extensions/skillweaver
+npm install
+npm run build
+wednesdayai gateway restart --deep
+```
+
+For development:
 
 ```bash
 cd extensions/skillweaver

@@ -56,7 +56,8 @@ pnpm format:fix     # oxfmt --write
 ```bash
 cp -r extensions/<id> ~/.openclaw/extensions/
 cd ~/.openclaw/extensions/<id>
-npm install --omit=dev
+npm install          # full install (includes typescript for build)
+npm run build
 wednesdayai gateway restart --deep
 ```
 
