@@ -62,9 +62,9 @@ Key fixes: race conditions, SAD timeout unbounded, prompt injection defense, abo
 
 ## References
 
-- [Spec](/docs/superpowers/specs/2026-07-06-plugin-skillweaver.md)
-- [Implementation Plan](/docs/plans/plugin-skillweaver/plan.md)
-- [Decisions Ledger](/docs/plans/plugin-skillweaver/decisions-ledger.md)
+- [Spec](/dev-docs/workstreams/plugin-skillweaver/spec/2026-07-06-plugin-skillweaver.md)
+- [Implementation Plan](/dev-docs/workstreams/plugin-skillweaver/plans/plugin-skillweaver/plan.md)
+- [Decisions Ledger](/dev-docs/workstreams/plugin-skillweaver/plans/plugin-skillweaver/decisions-ledger.md)
 - [ADR-0001: context.collect hook](/dev-docs/adr/0001-context-collect-hook-for-skill-injection.md)
 - [ADR-0002: Embedding backends](/dev-docs/adr/0002-pluggable-embedding-backend-interface.md)
 - [ADR-0003: SAD contract](/dev-docs/adr/0003-sad-prompt-contract.md)

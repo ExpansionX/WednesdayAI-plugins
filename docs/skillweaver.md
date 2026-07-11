@@ -1,6 +1,6 @@
 # SkillWeaver
 
-**Status:** Active | **Plugin ID:** `skillweaver` | **Package:** `@wednesdayai/skillweaver`
+**Status:** Shipped | **Plugin ID:** `skillweaver` | **Package:** `@wednesdayai/skillweaver`
 
 ## Overview
 
@@ -10,7 +10,17 @@ This replaces the default behavior of dumping all 56+ skill descriptions into th
 
 ## Quick Start
 
-SkillWeaver ships bundled with WednesdayAI. Enable it in your `openclaw.json`:
+Copy the plugin to your WednesdayAI extensions directory, then install and build:
+
+```bash
+cp -r extensions/skillweaver ~/.openclaw/extensions/
+cd ~/.openclaw/extensions/skillweaver
+npm install
+npm run build
+wednesdayai gateway restart --deep
+```
+
+Enable it in your `openclaw.json`:
 
 ```json
 {
@@ -20,7 +30,25 @@ SkillWeaver ships bundled with WednesdayAI. Enable it in your `openclaw.json`:
 }
 ```
 
-All defaults work out of the box: local embedding, OpenRouter decomposer, SAD enabled.
+### Optimize System Prompt (recommended)
+
+For maximum context savings, set skills mode to `"names"` so full descriptions aren't duplicated in the system prompt:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "systemPrompt": {
+        "sections": {
+          "skills": {
+            "mode": "names"
+          }
+        }
+      }
+    }
+  }
+}
+```
 
 ## Setup
 
@@ -125,6 +153,6 @@ Full config reference: [extensions/skillweaver/README.md](/extensions/skillweave
 ## Links
 
 - [Plugin README](/extensions/skillweaver/README.md)
-- [Spec](/docs/superpowers/specs/2026-07-06-plugin-skillweaver.md)
-- [Implementation Plan](/docs/plans/plugin-skillweaver/plan.md)
+- [Spec](/dev-docs/workstreams/plugin-skillweaver/spec/2026-07-06-plugin-skillweaver.md)
+- [Implementation Plan](/dev-docs/workstreams/plugin-skillweaver/plans/plugin-skillweaver/plan.md)
 - [ADRs](/dev-docs/adr/)

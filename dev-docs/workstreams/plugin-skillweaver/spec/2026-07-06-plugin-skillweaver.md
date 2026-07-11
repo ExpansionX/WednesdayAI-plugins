@@ -66,7 +66,7 @@ SC7: Latency budget — End-to-end routing (decompose + retrieve + inject) adds 
 - **Extension only** — no core changes to WednesdayAI. Uses existing `context.collect` hook + `api.config`.
 - **Skill index built at startup** — embedding index constructed in `register()`, updated on skill file changes via fs watch (debounced).
 - **Separate decomposer model** — configurable, defaults to agent's own model but should support a cheaper/smaller model (e.g., Qwen2.5-7B, gpt-4o-mini) to reduce the decomposition cost overhead.
-- **No core config mutation** — plugin cannot set `agents.defaults.systemPrompt.sections.skills`. Must detect and warn; user configures manually.
+- **No core config mutation** — plugin cannot set `agents.defaults.systemPrompt.sections.skills.mode`. Must detect and warn; user configures manually.
 - **Node.js ≥ 24** — same runtime requirement as WednesdayAI core.
 - **External dependency ceiling** — max 3 new npm deps (embedding lib, vector index, maybe an MCP SDK for skill catalog query).
 
@@ -98,7 +98,7 @@ Skill index lifecycle:
 - In-memory hnswlib index, never persisted to disk (rebuild is cheap at 56–200 skills)
 
 Config adaptation:
-- At startup, read `api.config.agents.defaults.systemPrompt.sections.skills`
+- At startup, read `api.config.agents.defaults.systemPrompt.sections.skills.mode`
 - If `"default"` or unset: log a warning recommending `"names"` mode
 - Plugin works regardless — but with redundancy in "default" mode
 

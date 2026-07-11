@@ -250,7 +250,7 @@ npm run build         # Build to dist/
 
 ## Links
 
-- [Spec](/docs/superpowers/specs/2026-07-06-plugin-skillweaver.md)
-- [Implementation Plan](/docs/plans/plugin-skillweaver/plan.md)
+- [Spec](/dev-docs/workstreams/plugin-skillweaver/spec/2026-07-06-plugin-skillweaver.md)
+- [Implementation Plan](/dev-docs/workstreams/plugin-skillweaver/plans/plugin-skillweaver/plan.md)
 - [ADRs](/dev-docs/adr/)
 - [Workstream Tracker](/dev-docs/workstreams/plugin-skillweaver/README.md)

@@ -67,7 +67,7 @@ author: david
 **Why:** The paper shows these are the two highest-impact improvements (+10.3% CatR@1 from reranker, better decomposition from iterative SAD). Planning now means we can start implementation immediately after shipping.
 **Effort:** 1-2 hours (design doc + task breakdown)
 **Blocked by:** Priority 2 (need benchmark baseline to measure improvement against)
-**Output:** New spec + plan in `docs/superpowers/specs/` and `docs/plans/plugin-skillweaver-v2/`
+**Output:** New spec + plan under `dev-docs/workstreams/plugin-skillweaver-v2/`
 
 ---
 
@@ -132,16 +132,16 @@ SkillWeaver v0.1.0 is COMPLETE — 254 tests, 88%+ coverage, 6 rounds of adversa
   - How to integrate a reranker stage after HNSW retrieval
   - How to implement multi-iteration SAD with Jaccard convergence
   - Whether to add MCP tool catalog integration in V2 or defer
-- Write the spec to `docs/superpowers/specs/2026-07-09-plugin-skillweaver-v2.md`
-- Create the implementation plan at `docs/plans/plugin-skillweaver-v2/plan.md`
+- Write the spec to `dev-docs/workstreams/plugin-skillweaver-v2/spec/2026-07-09-plugin-skillweaver-v2.md`
+- Create the implementation plan at `dev-docs/workstreams/plugin-skillweaver-v2/plans/plan.md`
 
 ### 4. Clean Up Stale State
-- Remove or update `docs/plans/plugin-skillweaver/.wai-run-state.json` (stale — shows task 001 deadlocked but all 18 tasks are complete)
+- Remove or update `dev-docs/workstreams/plugin-skillweaver/plans/plugin-skillweaver/.wai-run-state.json` (stale — shows task 001 deadlocked but all 18 tasks are complete)
 - Update `dev-docs/workstreams/plugin-skillweaver/README.md` status to `shipped` after merge
 
 ## Key Files
 - Plugin: `extensions/skillweaver/` (14 source files, 16 test files)
-- Spec: `docs/superpowers/specs/2026-07-06-plugin-skillweaver.md`
+- Spec: `dev-docs/workstreams/plugin-skillweaver/spec/2026-07-06-plugin-skillweaver.md`
 - ADRs: `dev-docs/adr/0001-0004`
 - Benchmark: `extensions/skillweaver/src/__tests__/benchmark.ts`
 - Paper: arXiv:2606.18051

@@ -6,12 +6,9 @@ workstream: plugin-skillweaver
 title: "Plugin: SkillWeaver — Compositional Skill Routing for WednesdayAI"
 created: 2026-07-06
 updated: 2026-07-09
-  spec: docs/superpowers/specs/2026-07-06-plugin-skillweaver.md
-  plans:
-  tasks: []
 staging_pointers:
-  - docs/plans/plugin-skillweaver
-  - docs/superpowers/specs/2026-07-06-plugin-skillweaver.md
+  - dev-docs/workstreams/plugin-skillweaver/plans/plugin-skillweaver
+  - dev-docs/workstreams/plugin-skillweaver/spec/2026-07-06-plugin-skillweaver.md
 ---
 
 # plugin-skillweaver
@@ -24,8 +21,8 @@ A WednesdayAI community plugin implementing SkillWeaver (Gao 2026) compositional
 
 ## Quick links
 
-- [Spec](/docs/superpowers/specs/2026-07-06-plugin-skillweaver.md)
-- [Implementation Plan](/docs/plans/plugin-skillweaver/plan.md)
+- [Spec](spec/2026-07-06-plugin-skillweaver.md)
+- [Implementation Plan](plans/plugin-skillweaver/plan.md)
 - [Plugin README](/extensions/skillweaver/README.md)
 - [CHANGELOG](/extensions/skillweaver/CHANGELOG.md)
 - [ADR-0001](/dev-docs/adr/0001-context-collect-hook-for-skill-injection.md) — `context.collect` hook for skill injection
