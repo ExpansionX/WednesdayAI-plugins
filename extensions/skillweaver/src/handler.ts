@@ -18,7 +18,9 @@ interface CollectContext {
 }
 
 // AgentMessage content is either a plain string or an array of typed blocks
-// (text/image). Only text blocks carry routable query text.
+// (text/image). Only text blocks carry routable query text. The type === "text"
+// gate is deliberately stricter than core's agentMessageText (which accepts any
+// block with a string .text): we route only on content pi-ai defines as text.
 export function extractMessageText(message: { content?: unknown } | null | undefined): string {
   const content = message?.content;
   if (typeof content === "string") return content;
@@ -31,16 +33,33 @@ export function extractMessageText(message: { content?: unknown } | null | undef
         typeof (block as { text?: unknown }).text === "string",
       )
       .map((block) => block.text)
+      .filter((text) => text.length > 0)
       .join("\n");
   }
   return "";
 }
 
-// Sub-agent sessions use "agent:<id>:subagent:<name>" keys (legacy: "subagent:<name>").
+// Mirrors core's isSubagentSessionKey (src/sessions/session-key-utils.ts) exactly:
+// legacy "subagent:<name>" prefix, or canonical "agent:<id>:<rest>" where <rest>
+// starts with "subagent:". A plain includes(":subagent:") is wrong — an agent whose
+// id is literally "subagent" (key "agent:subagent:main") must still be routed.
+function parseAgentSessionKeyRest(sessionKey: string): string | null {
+  const raw = sessionKey.trim().toLowerCase();
+  if (!raw) return null;
+  const parts = raw.split(":").filter(Boolean);
+  if (parts.length < 3 || parts[0] !== "agent") return null;
+  const agentId = parts[1]?.trim();
+  const rest = parts.slice(2).join(":");
+  if (!agentId || !rest) return null;
+  return rest;
+}
+
 export function isSubagentSessionKey(sessionKey: string | undefined): boolean {
-  if (!sessionKey) return false;
-  const key = sessionKey.toLowerCase();
-  return key.includes(":subagent:") || key.startsWith("subagent:");
+  const raw = (sessionKey ?? "").trim();
+  if (!raw) return false;
+  if (raw.toLowerCase().startsWith("subagent:")) return true;
+  const rest = parseAgentSessionKeyRest(raw);
+  return Boolean(rest?.startsWith("subagent:"));
 }
 
 interface CollectResult {
@@ -79,6 +98,10 @@ export function createCollectHandler(opts: HandlerOptions) {
   return async (event: CollectEvent, ctx?: CollectContext): Promise<CollectResult> => {
     if (opts.enabled === false) return {};
 
+    // On core's built-in collect path cleanUserMessage.content is the raw prompt
+    // string, so the event.prompt fallback is redundant there; it covers callers
+    // that pass image-only or empty message content. event.prompt is the clean
+    // pre-envelope prompt (envelope rendering happens after context.collect).
     const text = extractMessageText(event.cleanUserMessage) || (typeof event.prompt === "string" ? event.prompt : "");
     if (!text || text.length < opts.minQueryLength) return {};
 

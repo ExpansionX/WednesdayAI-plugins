@@ -93,12 +93,19 @@ describe("integration", () => {
         (c: any[]) => c[0] === "context.collect",
       )![1];
 
+      const { Decomposer } = await import("../decomposer.js");
+      const decomposeSpy = vi.spyOn(Decomposer.prototype, "decompose");
+
       const result = await handler(
         { cleanUserMessage: { content: "a long enough query to normally trigger routing" } },
         { sessionKey: "agent:main:subagent:worker" },
       );
 
       expect(result).toEqual({});
+      // Guard must return before decomposition — {} via a decomposer error would
+      // let a guard regression slip through this assertion otherwise.
+      expect(decomposeSpy).not.toHaveBeenCalled();
+      decomposeSpy.mockRestore();
     });
   });
 
@@ -123,12 +130,17 @@ describe("integration", () => {
         (c: any[]) => c[0] === "context.collect",
       )![1];
 
+      const { Decomposer } = await import("../decomposer.js");
+      const decomposeSpy = vi.spyOn(Decomposer.prototype, "decompose");
+
       const result = await handler(
         { cleanUserMessage: { content: "long enough query text to pass min query length check" } },
         { sessionKey: "agent:main:subagent:worker" },
       );
 
       expect(result).toEqual({});
+      expect(decomposeSpy).not.toHaveBeenCalled();
+      decomposeSpy.mockRestore();
     });
 
     it("returns empty when disabled", async () => {

@@ -245,6 +245,107 @@ describe("createCollectHandler", () => {
     expect(mockDecomposer.decompose).toHaveBeenCalledTimes(1);
   });
 
+  // Parity table against core's isSubagentSessionKey (session-key-utils.ts) — these
+  // keys are where a naive includes(":subagent:") implementation diverges from core.
+  it.each([
+    ["agent:main:subagent:worker", true],
+    ["subagent:worker", true],
+    ["SUBAGENT:worker", true],
+    ["  agent:main:subagent:worker  ", true],
+    ["agent:main:subagent:parent:subagent:child", true],
+    ["agent:subagent:main", false],
+    ["foo:subagent:bar", false],
+    ["agent:main:discord:channel", false],
+    ["", false],
+    ["   ", false],
+  ])("isSubagentSessionKey(%j) === %s (core parity)", async (sessionKey, isSubagent) => {
+    const mod = await import("./handler.js");
+    expect(mod.isSubagentSessionKey(sessionKey as string)).toBe(isSubagent);
+  });
+
+  it("routes for an agent whose id is literally 'subagent'", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    await handler(baseEvent, { sessionKey: "agent:subagent:main" });
+    expect(mockDecomposer.decompose).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips routing for padded subagent session keys (core trims)", async () => {
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: true,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    const result = await handler(baseEvent, { sessionKey: "  agent:main:subagent:worker  " });
+    expect(result).toEqual({});
+    expect(mockDecomposer.decompose).not.toHaveBeenCalled();
+  });
+
+  it("drops empty text blocks when joining block-array content", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    await handler({
+      ...baseEvent,
+      cleanUserMessage: {
+        content: [
+          { type: "text", text: "" },
+          { type: "text", text: "download this dataset and analyze it" },
+        ],
+      },
+    });
+
+    expect(mockDecomposer.decompose).toHaveBeenCalledWith(
+      "download this dataset and analyze it",
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("falls back to event.prompt for image-only content", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    await handler({
+      ...baseEvent,
+      cleanUserMessage: { content: [{ type: "image", data: "..." }] },
+      prompt: "download this dataset and analyze it then send a report",
+    });
+
+    expect(mockDecomposer.decompose).toHaveBeenCalledWith(
+      "download this dataset and analyze it then send a report",
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    );
+  });
+
   it("catches decomposer errors gracefully", async () => {
     mockDecomposer.decompose.mockRejectedValueOnce(new Error("API failure"));
     mockFormatSkillContext.mockReturnValueOnce({});
@@ -356,17 +457,20 @@ describe("createCollectHandler", () => {
     expect(result).toEqual({});
   });
 
-  it("does not crash on malformed envelope", async () => {
+  it("ignores the envelope entirely (null envelope still routes)", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
     const handler = createCollectHandler({
       decomposer: mockDecomposer as never,
       retriever: mockRetriever as never,
-      sadEnabled: true,
+      sadEnabled: false,
       minQueryLength: 20,
       decomposerModel: "test",
     });
 
     const result = await handler({ ...baseEvent, envelope: null as never });
     expect(result).toEqual({});
+    expect(mockDecomposer.decompose).toHaveBeenCalledTimes(1);
   });
 
   it("shares a single timeout budget across both SAD passes", async () => {
