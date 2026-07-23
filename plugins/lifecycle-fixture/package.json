@@ -4,6 +4,9 @@
   "description": "WednesdayAI lifecycle test fixture — not published",
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "files": [
     "index.ts",
     "openclaw.plugin.json"

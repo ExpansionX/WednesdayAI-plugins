@@ -15,6 +15,9 @@
   "scripts": {
     "test": "vitest run"
   },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "devDependencies": {
     "openclaw": "*",
     "vitest": "^4.0.0"

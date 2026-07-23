@@ -4,5 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "main": "index.ts",
-  "description": "Fixture plugin for CI validation"
+  "description": "Fixture plugin for CI validation",
+  "engines": {
+    "node": ">=24.0.0"
+  }
 }
