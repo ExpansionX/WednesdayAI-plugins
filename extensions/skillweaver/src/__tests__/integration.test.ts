@@ -67,7 +67,7 @@ describe("integration", () => {
       )![1];
 
       const result = await handler({
-        cleanUserMessage: { text: "create a PR and notify the team on Slack about the deployment status" },
+        cleanUserMessage: { content: "create a PR and notify the team on Slack about the deployment status" },
       });
       expect(result).toBeDefined();
       expect((result as Record<string, unknown>).systemPrompt).toBeUndefined();
@@ -93,10 +93,10 @@ describe("integration", () => {
         (c: any[]) => c[0] === "context.collect",
       )![1];
 
-      const result = await handler({
-        cleanUserMessage: { text: "a long enough query to normally trigger routing" },
-        envelope: { isSubAgent: true },
-      });
+      const result = await handler(
+        { cleanUserMessage: { content: "a long enough query to normally trigger routing" } },
+        { sessionKey: "agent:main:subagent:worker" },
+      );
 
       expect(result).toEqual({});
     });
@@ -111,7 +111,7 @@ describe("integration", () => {
         (c: any[]) => c[0] === "context.collect",
       )![1];
 
-      const result = await handler({ cleanUserMessage: { text: "hi" } });
+      const result = await handler({ cleanUserMessage: { content: "hi" } });
       expect(result).toEqual({});
     });
 
@@ -123,10 +123,10 @@ describe("integration", () => {
         (c: any[]) => c[0] === "context.collect",
       )![1];
 
-      const result = await handler({
-        cleanUserMessage: { text: "long enough query text to pass min query length check" },
-        envelope: { isSubAgent: true },
-      });
+      const result = await handler(
+        { cleanUserMessage: { content: "long enough query text to pass min query length check" } },
+        { sessionKey: "agent:main:subagent:worker" },
+      );
 
       expect(result).toEqual({});
     });

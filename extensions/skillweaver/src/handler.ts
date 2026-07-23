@@ -6,11 +6,41 @@ import { formatSkillContext } from "./context-injector.js";
 const log = createSubsystemLogger("skillweaver/handler");
 
 interface CollectEvent {
-  cleanUserMessage?: { text?: string };
+  cleanUserMessage?: { content?: unknown };
   messages?: unknown[];
-  envelope?: Record<string, unknown>;
+  envelope?: Record<string, unknown> | null;
   prompt?: string;
   storage?: unknown;
+}
+
+interface CollectContext {
+  sessionKey?: string;
+}
+
+// AgentMessage content is either a plain string or an array of typed blocks
+// (text/image). Only text blocks carry routable query text.
+export function extractMessageText(message: { content?: unknown } | null | undefined): string {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((block): block is { type: "text"; text: string } =>
+        block != null &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+      )
+      .map((block) => block.text)
+      .join("\n");
+  }
+  return "";
+}
+
+// Sub-agent sessions use "agent:<id>:subagent:<name>" keys (legacy: "subagent:<name>").
+export function isSubagentSessionKey(sessionKey: string | undefined): boolean {
+  if (!sessionKey) return false;
+  const key = sessionKey.toLowerCase();
+  return key.includes(":subagent:") || key.startsWith("subagent:");
 }
 
 interface CollectResult {
@@ -46,13 +76,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, context: string, onTime
 }
 
 export function createCollectHandler(opts: HandlerOptions) {
-  return async (event: CollectEvent): Promise<CollectResult> => {
+  return async (event: CollectEvent, ctx?: CollectContext): Promise<CollectResult> => {
     if (opts.enabled === false) return {};
 
-    const text = event.cleanUserMessage?.text ?? "";
+    const text = extractMessageText(event.cleanUserMessage) || (typeof event.prompt === "string" ? event.prompt : "");
     if (!text || text.length < opts.minQueryLength) return {};
 
-    if (event.envelope != null && typeof event.envelope === "object" && (event.envelope as Record<string, unknown>)["isSubAgent"] === true) return {};
+    if (isSubagentSessionKey(ctx?.sessionKey)) return {};
 
     const timeoutMs = opts.decomposerTimeoutMs ?? 30000;
     const retrievalTimeoutMs = opts.retrievalTimeoutMs ?? 30000;

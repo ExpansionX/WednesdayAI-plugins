@@ -21,7 +21,7 @@ describe("createCollectHandler", () => {
   });
 
   const baseEvent = {
-    cleanUserMessage: { text: "download this dataset and analyze it then send a report to slack" },
+    cleanUserMessage: { content: "download this dataset and analyze it then send a report to slack" },
     messages: [],
     envelope: {},
     storage: undefined,
@@ -38,7 +38,7 @@ describe("createCollectHandler", () => {
 
     const result = await handler({
       ...baseEvent,
-      cleanUserMessage: { text: "hi" },
+      cleanUserMessage: { content: "hi" },
     });
 
     expect(result).toEqual({});
@@ -56,10 +56,65 @@ describe("createCollectHandler", () => {
 
     const result = await handler({
       ...baseEvent,
-      cleanUserMessage: { text: "" } as never,
+      cleanUserMessage: { content: "" } as never,
     });
 
     expect(result).toEqual({});
+  });
+
+  it("extracts text from block-array content", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    await handler({
+      ...baseEvent,
+      cleanUserMessage: {
+        content: [
+          { type: "text", text: "download this dataset and analyze it" },
+          { type: "image", data: "..." },
+          { type: "text", text: "then send a report to slack" },
+        ],
+      },
+    });
+
+    expect(mockDecomposer.decompose).toHaveBeenCalledWith(
+      "download this dataset and analyze it\nthen send a report to slack",
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("falls back to event.prompt when cleanUserMessage has no text", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    await handler({
+      ...baseEvent,
+      cleanUserMessage: undefined as never,
+      prompt: "download this dataset and analyze it then send a report",
+    });
+
+    expect(mockDecomposer.decompose).toHaveBeenCalledWith(
+      "download this dataset and analyze it then send a report",
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    );
   });
 
   it("returns empty when enabled is false", async () => {
@@ -154,13 +209,40 @@ describe("createCollectHandler", () => {
       decomposerModel: "test",
     });
 
-    const result = await handler({
-      ...baseEvent,
-      envelope: { isSubAgent: true },
-    });
+    const result = await handler(baseEvent, { sessionKey: "agent:main:subagent:worker" });
 
     expect(result).toEqual({});
     expect(mockDecomposer.decompose).not.toHaveBeenCalled();
+  });
+
+  it("skips routing for legacy subagent session keys", async () => {
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: true,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    const result = await handler(baseEvent, { sessionKey: "subagent:worker" });
+
+    expect(result).toEqual({});
+    expect(mockDecomposer.decompose).not.toHaveBeenCalled();
+  });
+
+  it("routes normally for non-subagent session keys", async () => {
+    mockDecomposer.decompose.mockResolvedValueOnce({ subTasks: [], hints: [], pass: 1 });
+
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer as never,
+      retriever: mockRetriever as never,
+      sadEnabled: false,
+      minQueryLength: 20,
+      decomposerModel: "test",
+    });
+
+    await handler(baseEvent, { sessionKey: "agent:main:discord:channel" });
+    expect(mockDecomposer.decompose).toHaveBeenCalledTimes(1);
   });
 
   it("catches decomposer errors gracefully", async () => {
