@@ -45,7 +45,7 @@ Add to your `openclaw.json`:
       "enabled": true,
       "decomposer": {
         "provider": "openrouter",
-        "model": "qwen/qwen2.5-7b-instruct"
+        "model": "qwen/qwen-2.5-7b-instruct"
       },
       "embedding": {
         "backend": "local"
@@ -149,7 +149,7 @@ For self-hosted embedding servers (Infinity, TEI, etc.).
 |-----|------|---------|-------------|
 | `enabled` | boolean | `true` | Master on/off switch |
 | `decomposer.provider` | string | `"openrouter"` | LLM provider: `openrouter`, `openai`, `anthropic`, `openai-compatible` |
-| `decomposer.model` | string | `"qwen/qwen2.5-7b-instruct"` | Model for query decomposition |
+| `decomposer.model` | string | `"qwen/qwen-2.5-7b-instruct"` | Model for query decomposition |
 | `decomposer.apiKey` | string | null | API key override (defaults to agent credentials) |
 | `decomposer.baseUrl` | string | null | Base URL for `openai-compatible` provider |
 | `decomposer.temperature` | number | `0.1` | Sampling temperature (0–2) |

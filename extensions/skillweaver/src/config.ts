@@ -36,7 +36,7 @@ const DEFAULTS = {
   enabled: true,
   decomposer: {
     provider: "openrouter" as const,
-    model: "qwen/qwen2.5-7b-instruct",
+    model: "qwen/qwen-2.5-7b-instruct",
     temperature: 0.1,
     maxTokens: 256,
   },

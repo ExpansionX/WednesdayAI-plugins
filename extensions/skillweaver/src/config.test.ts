@@ -3,7 +3,7 @@ import { resolveConfig, checkSkillsMode, validateConfig } from "./config.js";
 
 const defaults = {
   enabled: true,
-  decomposer: { provider: "openrouter", model: "qwen/qwen2.5-7b-instruct", temperature: 0.1, maxTokens: 256 },
+  decomposer: { provider: "openrouter", model: "qwen/qwen-2.5-7b-instruct", temperature: 0.1, maxTokens: 256 },
   embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small", cloudDimensions: null, customModel: "custom", customDimensions: null },
   retrieval: { topK: 3, hintSize: 15, minQueryLength: 20, retrievalTimeoutMs: 30000 },
   sad: { enabled: true },

@@ -7,7 +7,7 @@ import { LocalEmbedding } from "./src/embedding/local.js";
 import { CloudEmbedding } from "./src/embedding/cloud.js";
 import { CustomEmbedding } from "./src/embedding/custom.js";
 import type { EmbeddingBackend, SkillEntry } from "./src/embedding/types.js";
-import { Decomposer } from "./src/decomposer.js";
+import { Decomposer, envApiKey } from "./src/decomposer.js";
 import { createRetriever } from "./src/retriever.js";
 import { createCollectHandler } from "./src/handler.js";
 import { createSubsystemLogger } from "./src/logger.js";
@@ -136,10 +136,19 @@ const plugin = {
     const backend = resolveBackend(config);
     const index = new SkillIndex(backend);
 
+    const decomposerApiKey = config.decomposer.apiKey ?? envApiKey(config.decomposer.provider);
+    if (!decomposerApiKey && config.decomposer.provider !== "openai-compatible") {
+      api.logger.warn(
+        `skillweaver: no API key for decomposer provider "${config.decomposer.provider}" ` +
+          `(set decomposer.apiKey in plugin config or the provider's env var, e.g. OPENROUTER_API_KEY); ` +
+          `decomposition requests will fail with 401`,
+      );
+    }
+
     const decomposer = new Decomposer({
       provider: config.decomposer.provider,
       model: config.decomposer.model,
-      apiKey: config.decomposer.apiKey,
+      apiKey: decomposerApiKey,
       baseUrl: config.decomposer.baseUrl,
       temperature: config.decomposer.temperature,
       maxTokens: config.decomposer.maxTokens,

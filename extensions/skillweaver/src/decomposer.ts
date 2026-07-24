@@ -29,6 +29,15 @@ export interface DecomposerConfig extends DecomposerOptions {
   fetchRaw: typeof fetch;
 }
 
+export function envApiKey(provider: string): string | null {
+  switch (provider) {
+    case "openrouter": return process.env.OPENROUTER_API_KEY ?? null;
+    case "openai": return process.env.OPENAI_API_KEY ?? null;
+    case "anthropic": return process.env.ANTHROPIC_API_KEY ?? null;
+    default: return null;
+  }
+}
+
 function resolveEndpoint(provider: string, baseUrl?: string | null): string {
   if (baseUrl) return baseUrl;
   switch (provider) {

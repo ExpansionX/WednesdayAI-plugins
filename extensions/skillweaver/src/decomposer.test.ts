@@ -86,7 +86,7 @@ describe("Decomposer", () => {
       const decomposer = new Decomposer({
         fetchRaw: mockFetchRaw,
         provider: "openrouter",
-        model: "qwen/qwen2.5-7b-instruct",
+        model: "qwen/qwen-2.5-7b-instruct",
         apiKey: "sk-test",
       });
 
@@ -607,6 +607,58 @@ describe("Decomposer", () => {
 
       const result = await decomposer.decompose("query");
       expect(result.subTasks).toEqual([]);
+    });
+  });
+});
+
+describe("envApiKey", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let envApiKey: any;
+
+  beforeAll(async () => {
+    const mod = await import("./decomposer.js");
+    envApiKey = mod.envApiKey;
+  });
+
+  const withEnv = (key: string, value: string | undefined, fn: () => void) => {
+    const prev = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env[key];
+      else process.env[key] = prev;
+    }
+  };
+
+  it("falls back to OPENROUTER_API_KEY for openrouter", () => {
+    withEnv("OPENROUTER_API_KEY", "sk-or-env", () => {
+      expect(envApiKey("openrouter")).toBe("sk-or-env");
+    });
+  });
+
+  it("falls back to OPENAI_API_KEY for openai", () => {
+    withEnv("OPENAI_API_KEY", "sk-oai-env", () => {
+      expect(envApiKey("openai")).toBe("sk-oai-env");
+    });
+  });
+
+  it("falls back to ANTHROPIC_API_KEY for anthropic", () => {
+    withEnv("ANTHROPIC_API_KEY", "sk-ant-env", () => {
+      expect(envApiKey("anthropic")).toBe("sk-ant-env");
+    });
+  });
+
+  it("returns null for openai-compatible (no env fallback)", () => {
+    withEnv("OPENAI_API_KEY", "sk-oai-env", () => {
+      expect(envApiKey("openai-compatible")).toBeNull();
+    });
+  });
+
+  it("returns null when the env var is unset", () => {
+    withEnv("OPENROUTER_API_KEY", undefined, () => {
+      expect(envApiKey("openrouter")).toBeNull();
     });
   });
 });

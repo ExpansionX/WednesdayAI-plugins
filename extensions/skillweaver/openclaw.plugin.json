@@ -23,7 +23,7 @@
           },
           "model": {
             "type": "string",
-            "default": "qwen/qwen2.5-7b-instruct",
+            "default": "qwen/qwen-2.5-7b-instruct",
             "description": "Model used for query decomposition."
           },
           "apiKey": {
