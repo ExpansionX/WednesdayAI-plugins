@@ -152,7 +152,7 @@ For self-hosted embedding servers (Infinity, TEI, etc.).
 | `decomposer.apiKey` | string | null | API key override (defaults to agent credentials) |
 | `decomposer.baseUrl` | string | null | Base URL for `openai-compatible` provider |
 | `decomposer.temperature` | number | `0.1` | Sampling temperature (0–2) |
-| `decomposer.maxTokens` | number | `256` | Max tokens in decomposition response |
+| `decomposer.maxTokens` | number | `4096` | Max output tokens (a cap — reasoning models spend thinking tokens from this budget first) |
 | `embedding.backend` | string | `"local"` | Backend: `local`, `cloud`, `custom` |
 | `embedding.model` | string | `"all-MiniLM-L6-v2"` | Model for local backend |
 | `embedding.cloudModel` | string | `"text-embedding-3-small"` | Model for cloud (OpenAI) backend |

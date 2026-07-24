@@ -41,7 +41,9 @@ const DEFAULTS = {
     provider: "gateway" as const,
     model: null as string | null,
     temperature: 0.1,
-    maxTokens: 256,
+    // Generous cap, not a target: gateway models may be reasoning models whose
+    // thinking tokens count against this budget before any content is emitted.
+    maxTokens: 4096,
   },
   embedding: {
     backend: "local" as const,
@@ -118,7 +120,7 @@ export function validateConfig(config: SkillWeaverConfig): void {
     ["hintSize", config.retrieval.hintSize, 5, 50, true],
     ["minQueryLength", config.retrieval.minQueryLength, 5, 500, true],
     ["temperature", config.decomposer.temperature, 0, 2, false],
-    ["maxTokens", config.decomposer.maxTokens, 50, 1024, true],
+    ["maxTokens", config.decomposer.maxTokens, 50, 16384, true],
     ["retrievalTimeoutMs", config.retrieval.retrievalTimeoutMs, 1000, 300000, true],
   ];
   for (const [name, value, min, max, isInt] of numericFields) {

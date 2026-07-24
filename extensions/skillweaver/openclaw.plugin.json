@@ -57,9 +57,10 @@
           },
           "maxTokens": {
             "type": "number",
-            "default": 256,
+            "default": 4096,
             "minimum": 50,
-            "maximum": 1024
+            "maximum": 16384,
+            "description": "Max output tokens for the decomposition response. A cap, not a target \u2014 reasoning models spend thinking tokens from this budget first, so keep it generous."
           }
         }
       },

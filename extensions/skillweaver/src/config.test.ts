@@ -3,7 +3,7 @@ import { resolveConfig, checkSkillsMode, validateConfig } from "./config.js";
 
 const defaults = {
   enabled: true,
-  decomposer: { provider: "gateway", model: null, temperature: 0.1, maxTokens: 256 },
+  decomposer: { provider: "gateway", model: null, temperature: 0.1, maxTokens: 4096 },
   embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small", cloudDimensions: null, customModel: "custom", customDimensions: null },
   retrieval: { topK: 3, hintSize: 15, minQueryLength: 20, retrievalTimeoutMs: 30000 },
   sad: { enabled: true },
@@ -164,7 +164,7 @@ describe("validateConfig", () => {
   });
 
   it("rejects out-of-range maxTokens", () => {
-    const config = resolveConfig({ decomposer: { maxTokens: 2000 } });
+    const config = resolveConfig({ decomposer: { maxTokens: 20000 } });
     expect(() => validateConfig(config)).toThrow(/maxTokens/);
   });
 
