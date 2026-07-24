@@ -67,11 +67,12 @@ interface CollectResult {
 }
 
 export interface HandlerOptions {
-  decomposer: Decomposer;
+  /** null runs retrieval-only mode: the raw query is the single sub-task. */
+  decomposer: Decomposer | null;
   retriever: Retriever;
   sadEnabled: boolean;
   minQueryLength: number;
-  decomposerModel: string;
+  decomposerModel?: string;
   enabled?: boolean;
   decomposerTimeoutMs?: number;
   retrievalTimeoutMs?: number;
@@ -116,19 +117,24 @@ export function createCollectHandler(opts: HandlerOptions) {
     const remainingDecomposerMs = () => Math.max(1, decomposerDeadline - Date.now());
 
     try {
-      const pass1Result = await withTimeout(
-        opts.decomposer.decompose(text, undefined, undefined, ac.signal),
-        remainingDecomposerMs(),
-        "decomposer.decompose pass 1",
-        () => ac.abort(),
-      );
-      if (pass1Result.subTasks.length === 0) return {};
-
-      let subTasks = pass1Result.subTasks.map((s) => s.trim()).filter((s) => s.length > 0);
-      if (subTasks.length === 0) return {};
+      let subTasks: string[];
+      if (opts.decomposer) {
+        const pass1Result = await withTimeout(
+          opts.decomposer.decompose(text, undefined, undefined, ac.signal, ctx?.sessionKey),
+          remainingDecomposerMs(),
+          "decomposer.decompose pass 1",
+          () => ac.abort(),
+        );
+        if (pass1Result.subTasks.length === 0) return {};
+        subTasks = pass1Result.subTasks.map((s) => s.trim()).filter((s) => s.length > 0);
+        if (subTasks.length === 0) return {};
+      } else {
+        subTasks = [text];
+      }
       let actualPass: 1 | 2 = 1;
 
-      if (opts.sadEnabled && !ac.signal.aborted) {
+      if (opts.decomposer && opts.sadEnabled && !ac.signal.aborted) {
+        const decomposer = opts.decomposer;
         const hints = await withTimeout(
           opts.retriever.buildHintSet(subTasks, retrievalAc.signal),
           retrievalTimeoutMs,
@@ -137,7 +143,7 @@ export function createCollectHandler(opts: HandlerOptions) {
         );
         if (hints.length > 0 && !ac.signal.aborted) {
           const pass2Result = await withTimeout(
-            opts.decomposer.decompose(text, hints, undefined, ac.signal),
+            decomposer.decompose(text, hints, undefined, ac.signal, ctx?.sessionKey),
             remainingDecomposerMs(),
             "decomposer.decompose pass 2",
             () => ac.abort(),

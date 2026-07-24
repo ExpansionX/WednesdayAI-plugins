@@ -7,7 +7,7 @@ import { LocalEmbedding } from "./src/embedding/local.js";
 import { CloudEmbedding } from "./src/embedding/cloud.js";
 import { CustomEmbedding } from "./src/embedding/custom.js";
 import type { EmbeddingBackend, SkillEntry } from "./src/embedding/types.js";
-import { Decomposer, envApiKey } from "./src/decomposer.js";
+import { Decomposer, envApiKey, type AnalysisRunner } from "./src/decomposer.js";
 import { createRetriever } from "./src/retriever.js";
 import { createCollectHandler } from "./src/handler.js";
 import { createSubsystemLogger } from "./src/logger.js";
@@ -136,23 +136,48 @@ const plugin = {
     const backend = resolveBackend(config);
     const index = new SkillIndex(backend);
 
-    const decomposerApiKey = config.decomposer.apiKey ?? envApiKey(config.decomposer.provider);
-    if (!decomposerApiKey && config.decomposer.provider !== "openai-compatible") {
-      api.logger.warn(
-        `skillweaver: no API key for decomposer provider "${config.decomposer.provider}" ` +
-          `(set decomposer.apiKey in plugin config or the provider's env var, e.g. OPENROUTER_API_KEY); ` +
-          `decomposition requests will fail with 401`,
-      );
-    }
+    let decomposer: Decomposer | null = null;
+    let decomposerModel: string | undefined;
 
-    const decomposer = new Decomposer({
-      provider: config.decomposer.provider,
-      model: config.decomposer.model,
-      apiKey: decomposerApiKey,
-      baseUrl: config.decomposer.baseUrl,
-      temperature: config.decomposer.temperature,
-      maxTokens: config.decomposer.maxTokens,
-    });
+    if (config.decomposer.provider === "gateway") {
+      // Route decomposition through core's analysis runtime so requests use the
+      // gateway's own model layer and credentials — no plugin-side API keys.
+      const analysis = (api.runtime as { analysis?: AnalysisRunner } | undefined)?.analysis;
+      if (analysis) {
+        decomposerModel = config.decomposer.model ?? undefined;
+        decomposer = new Decomposer({
+          provider: "gateway",
+          analysis,
+          model: config.decomposer.model,
+          temperature: config.decomposer.temperature,
+          maxTokens: config.decomposer.maxTokens,
+          timeoutMs: config.retrieval.retrievalTimeoutMs,
+        });
+      } else {
+        api.logger.warn(
+          "skillweaver: core runtime does not expose the analysis pathway (api.runtime.analysis); " +
+            "running retrieval-only without query decomposition",
+        );
+      }
+    } else {
+      const apiKey = config.decomposer.apiKey ?? envApiKey(config.decomposer.provider);
+      if (!apiKey && config.decomposer.provider !== "openai-compatible") {
+        api.logger.warn(
+          `skillweaver: no API key for decomposer provider "${config.decomposer.provider}" ` +
+            `(set decomposer.apiKey in plugin config or the provider's env var, e.g. OPENROUTER_API_KEY); ` +
+            `decomposition requests will fail with 401`,
+        );
+      }
+      decomposerModel = config.decomposer.model ?? undefined;
+      decomposer = new Decomposer({
+        provider: config.decomposer.provider,
+        model: config.decomposer.model as string,
+        apiKey,
+        baseUrl: config.decomposer.baseUrl,
+        temperature: config.decomposer.temperature,
+        maxTokens: config.decomposer.maxTokens,
+      });
+    }
 
     const retriever = createRetriever(index, {
       topK: config.retrieval.topK,
@@ -164,7 +189,7 @@ const plugin = {
       retriever,
       sadEnabled: config.sad.enabled,
       minQueryLength: config.retrieval.minQueryLength,
-      decomposerModel: config.decomposer.model,
+      decomposerModel,
       retrievalTimeoutMs: config.retrieval.retrievalTimeoutMs,
     });
 
@@ -176,7 +201,7 @@ const plugin = {
     api.on("gateway_stop", async () => {
       if (disposed) return;
       disposed = true;
-      try { decomposer.dispose(); } catch { /* ignore */ }
+      try { decomposer?.dispose(); } catch { /* ignore */ }
       try { index.dispose(); } catch { /* ignore */ }
       if (initPromise) {
         await initPromise.catch(() => {});

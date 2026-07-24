@@ -15,14 +15,46 @@ export interface DecompositionResultWithError extends DecompositionResult {
   errors?: DecompositionError[];
 }
 
+/**
+ * Minimal shape of core's plugin analysis runtime (api.runtime.analysis).
+ * Routes LLM calls through the gateway's own model layer and credentials, so
+ * plugins need no API keys of their own. Source of truth:
+ * WednesdayAI-core src/plugins/runtime/types-analysis.ts
+ */
+export interface AnalysisRunner {
+  run(params: {
+    purpose: string;
+    input: string;
+    systemPrompt?: string;
+    model?: string;
+    sessionKey?: string;
+    timeoutMs?: number;
+    responseFormat?: "text" | "json";
+    maxOutputTokens?: number;
+    temperature?: number;
+  }): Promise<{
+    status: "ok" | "empty" | "timeout" | "error" | "rejected";
+    text?: string;
+    json?: unknown;
+    error?: string;
+    model?: string;
+  }>;
+}
+
 export interface DecomposerOptions {
   fetchRaw?: typeof fetch;
   provider: string;
-  model: string;
+  /** For provider "gateway": an optional "<provider>/<model>" or bare model ref
+   * resolved by core; null/undefined uses the session default model. Required
+   * for all other providers. */
+  model?: string | null;
+  /** Required for provider "gateway"; unused otherwise. */
+  analysis?: AnalysisRunner | null;
   apiKey?: string | null;
   baseUrl?: string | null;
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number;
 }
 
 export interface DecomposerConfig extends DecomposerOptions {
@@ -134,18 +166,26 @@ export class Decomposer {
   private disposed = false;
 
   constructor(opts: DecomposerOptions) {
+    if (opts.provider === "gateway" && !opts.analysis) {
+      throw new Error("Decomposer: provider \"gateway\" requires an analysis runtime");
+    }
+    if (opts.provider !== "gateway" && (!opts.model || opts.model.trim() === "")) {
+      throw new Error(`Decomposer: model is required for provider "${opts.provider}"`);
+    }
     this.config = {
       fetchRaw: opts.fetchRaw ?? fetch,
       provider: opts.provider,
-      model: opts.model,
+      model: opts.model ?? null,
+      analysis: opts.analysis ?? null,
       apiKey: opts.apiKey ?? null,
       baseUrl: opts.baseUrl ?? null,
       temperature: opts.temperature ?? 0.1,
       maxTokens: opts.maxTokens ?? 256,
+      timeoutMs: opts.timeoutMs ?? 30000,
     };
   }
 
-  async decompose(query: string, hints?: HintEntry[], maxSubTasks = 10, signal?: AbortSignal): Promise<DecompositionResultWithError> {
+  async decompose(query: string, hints?: HintEntry[], maxSubTasks = 10, signal?: AbortSignal, sessionKey?: string): Promise<DecompositionResultWithError> {
     if (this.disposed) throw new Error("Decomposer: already disposed");
 
     const hasHints = hints && hints.length > 0;
@@ -155,6 +195,10 @@ export class Decomposer {
         : buildSADPass1Prompt(query);
       if (hasHints && hints.length < 3) {
         prompt += "\n\nIf no skill matches the sub-task, use a clear description that would help a human find the right tool.";
+      }
+
+      if (this.config.provider === "gateway") {
+        return await this.decomposeViaGateway(prompt, hasHints ? 2 : 1, maxSubTasks, sessionKey);
       }
 
       const endpoint = resolveEndpoint(this.config.provider, this.config.baseUrl);
@@ -237,6 +281,47 @@ export class Decomposer {
       log.warn("decompose failed", { error: error.message, provider: this.config.provider });
       return { subTasks: [], pass: hasHints ? 2 : 1, errors: [error] };
     }
+  }
+
+  private async decomposeViaGateway(prompt: string, pass: 1 | 2, maxSubTasks: number, sessionKey?: string): Promise<DecompositionResultWithError> {
+    const analysis = this.config.analysis;
+    if (!analysis) {
+      return { subTasks: [], pass, errors: [{ type: "unknown", message: "gateway provider has no analysis runtime" }] };
+    }
+
+    const result = await analysis.run({
+      purpose: "skillweaver.decompose",
+      input: prompt,
+      systemPrompt: "Output ONLY a JSON object with a \"subTasks\" key containing an array of strings. No other text.",
+      responseFormat: "json",
+      ...(this.config.model ? { model: this.config.model } : {}),
+      ...(sessionKey ? { sessionKey } : {}),
+      timeoutMs: this.config.timeoutMs,
+      maxOutputTokens: this.config.maxTokens,
+      temperature: this.config.temperature,
+    });
+
+    if (result.status !== "ok") {
+      const type: DecompositionError["type"] = result.status === "timeout" ? "timeout" : result.status === "empty" ? "parse" : "unknown";
+      const error: DecompositionError = { type, message: result.error ?? `analysis ${result.status}` };
+      log.warn("decompose failed", { error: error.message, status: result.status, provider: "gateway" });
+      return { subTasks: [], pass, errors: [error] };
+    }
+
+    let subTasks: string[];
+    const json = result.json as Record<string, unknown> | undefined;
+    if (json && Array.isArray(json.subTasks) && (json.subTasks as unknown[]).every((s): s is string => typeof s === "string")) {
+      subTasks = json.subTasks as string[];
+    } else {
+      subTasks = extractJsonArray(result.text ?? (result.json !== undefined ? JSON.stringify(result.json) : ""));
+    }
+    if (subTasks.length > maxSubTasks) subTasks = subTasks.slice(0, maxSubTasks);
+
+    const errors: DecompositionError[] = [];
+    if (subTasks.length === 0 && (result.text || result.json !== undefined)) {
+      errors.push({ type: "parse", message: "failed to extract sub-tasks from analysis response" });
+    }
+    return { subTasks, pass, ...(errors.length > 0 ? { errors } : {}) };
   }
 
   dispose(): void {

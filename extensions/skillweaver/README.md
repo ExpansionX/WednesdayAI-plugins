@@ -44,8 +44,7 @@ Add to your `openclaw.json`:
     "skillweaver": {
       "enabled": true,
       "decomposer": {
-        "provider": "openrouter",
-        "model": "qwen/qwen-2.5-7b-instruct"
+        "provider": "gateway"
       },
       "embedding": {
         "backend": "local"
@@ -148,8 +147,8 @@ For self-hosted embedding servers (Infinity, TEI, etc.).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | boolean | `true` | Master on/off switch |
-| `decomposer.provider` | string | `"openrouter"` | LLM provider: `openrouter`, `openai`, `anthropic`, `openai-compatible` |
-| `decomposer.model` | string | `"qwen/qwen-2.5-7b-instruct"` | Model for query decomposition |
+| `decomposer.provider` | string | `"gateway"` | `gateway` routes via the core analysis runtime (no plugin API keys needed); or `openrouter`, `openai`, `anthropic`, `openai-compatible` for direct calls |
+| `decomposer.model` | string \| null | `null` | With `gateway`: an optional `<provider>/<model>` or bare-model ref resolved by core config; `null` uses the session default model. Required for non-gateway providers |
 | `decomposer.apiKey` | string | null | API key override (defaults to agent credentials) |
 | `decomposer.baseUrl` | string | null | Base URL for `openai-compatible` provider |
 | `decomposer.temperature` | number | `0.1` | Sampling temperature (0–2) |

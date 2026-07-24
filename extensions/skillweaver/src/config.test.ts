@@ -3,7 +3,7 @@ import { resolveConfig, checkSkillsMode, validateConfig } from "./config.js";
 
 const defaults = {
   enabled: true,
-  decomposer: { provider: "openrouter", model: "qwen/qwen-2.5-7b-instruct", temperature: 0.1, maxTokens: 256 },
+  decomposer: { provider: "gateway", model: null, temperature: 0.1, maxTokens: 256 },
   embedding: { backend: "local", model: "all-MiniLM-L6-v2", cloudModel: "text-embedding-3-small", cloudDimensions: null, customModel: "custom", customDimensions: null },
   retrieval: { topK: 3, hintSize: 15, minQueryLength: 20, retrievalTimeoutMs: 30000 },
   sad: { enabled: true },
@@ -94,7 +94,7 @@ describe("resolveConfig", () => {
 
   it("handles non-object decomposer gracefully", () => {
     const result = resolveConfig({ decomposer: "invalid" });
-    expect(result.decomposer.provider).toBe("openrouter");
+    expect(result.decomposer.provider).toBe("gateway");
   });
 
   it("handles non-object embedding gracefully", () => {
@@ -287,5 +287,32 @@ describe("checkSkillsMode", () => {
 
   it("returns 'default' for missing sections", () => {
     expect(checkSkillsMode({ agents: { defaults: { systemPrompt: {} } } })).toBe("default");
+  });
+});
+
+describe("validateConfig decomposer model", () => {
+  it("accepts gateway provider with null model", () => {
+    const cfg = resolveConfig({});
+    expect(() => validateConfig(cfg)).not.toThrow();
+  });
+
+  it("accepts gateway provider with a provider/model ref", () => {
+    const cfg = resolveConfig({ decomposer: { model: "bifrost/low" } });
+    expect(() => validateConfig(cfg)).not.toThrow();
+  });
+
+  it("accepts a bare model ref for gateway provider", () => {
+    const cfg = resolveConfig({ decomposer: { model: "local-small" } });
+    expect(() => validateConfig(cfg)).not.toThrow();
+  });
+
+  it("rejects an empty-string gateway model ref", () => {
+    const cfg = resolveConfig({ decomposer: { model: "  " } });
+    expect(() => validateConfig(cfg)).toThrow(/non-empty model ref/);
+  });
+
+  it("requires a model for non-gateway providers", () => {
+    const cfg = resolveConfig({ decomposer: { provider: "openrouter" } });
+    expect(() => validateConfig(cfg)).toThrow(/decomposer\.model is required/);
   });
 });

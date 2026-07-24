@@ -89,6 +89,7 @@ describe("createCollectHandler", () => {
       undefined,
       undefined,
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -114,6 +115,7 @@ describe("createCollectHandler", () => {
       undefined,
       undefined,
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -318,6 +320,7 @@ describe("createCollectHandler", () => {
       undefined,
       undefined,
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -343,6 +346,7 @@ describe("createCollectHandler", () => {
       undefined,
       undefined,
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -561,5 +565,26 @@ describe("createCollectHandler", () => {
     await expect(resultPromise).resolves.toEqual({});
     expect(capturedSignal).toBeDefined();
     expect(capturedSignal!.aborted).toBe(true);
+  });
+});
+
+describe("createCollectHandler retrieval-only mode (decomposer: null)", () => {
+  it("retrieves on the raw query as a single sub-task", async () => {
+    const retrieve = vi.fn().mockResolvedValue([
+      { name: "test-skill", description: "does things", score: 0.9, content: "skill body" },
+    ]);
+    const handler = createCollectHandler({
+      decomposer: null,
+      retriever: { retrieve, buildHintSet: vi.fn() },
+      sadEnabled: true,
+      minQueryLength: 20,
+    });
+
+    mockFormatSkillContext.mockReset();
+    mockFormatSkillContext.mockReturnValue({ prependContext: [{ content: "## Skill Routing" }] });
+    const result = await handler({ cleanUserMessage: { content: "download this dataset and analyze it" } });
+    expect(retrieve).toHaveBeenCalledWith(["download this dataset and analyze it"], expect.any(AbortSignal));
+    expect(mockFormatSkillContext).toHaveBeenCalledWith(expect.anything(), ["download this dataset and analyze it"], undefined);
+    expect(result.prependContext?.length ?? 0).toBeGreaterThan(0);
   });
 });

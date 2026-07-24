@@ -1,8 +1,8 @@
 export interface SkillWeaverConfig {
   enabled: boolean;
   decomposer: {
-    provider: "openrouter" | "openai" | "anthropic" | "openai-compatible";
-    model: string;
+    provider: "gateway" | "openrouter" | "openai" | "anthropic" | "openai-compatible";
+    model: string | null;
     apiKey?: string | null;
     baseUrl?: string | null;
     temperature: number;
@@ -35,8 +35,11 @@ export interface SkillWeaverConfig {
 const DEFAULTS = {
   enabled: true,
   decomposer: {
-    provider: "openrouter" as const,
-    model: "qwen/qwen-2.5-7b-instruct",
+    // "gateway" inherits the model configuration from the core openclaw config:
+    // `model` (when set) is a "<provider>/<model>" ref into models.providers,
+    // otherwise agents.defaults.model.primary (the session default) is used.
+    provider: "gateway" as const,
+    model: null as string | null,
     temperature: 0.1,
     maxTokens: 256,
   },
@@ -63,7 +66,7 @@ const DEFAULTS = {
 } as const;
 
 const VALID_BACKENDS = new Set(["local", "cloud", "custom"]);
-const VALID_PROVIDERS = new Set(["openrouter", "openai", "anthropic", "openai-compatible"]);
+const VALID_PROVIDERS = new Set(["gateway", "openrouter", "openai", "anthropic", "openai-compatible"]);
 
 export function resolveConfig(raw: Record<string, unknown>): SkillWeaverConfig {
   const rawObj = (v: unknown): Record<string, unknown> =>
@@ -135,8 +138,14 @@ export function validateConfig(config: SkillWeaverConfig): void {
   if (config.decomposer.provider === "openai-compatible" && !config.decomposer.baseUrl) {
     throw new Error("decomposer.baseUrl is required when provider is 'openai-compatible'");
   }
-  if (!config.decomposer.model || config.decomposer.model.trim() === "") {
-    throw new Error("decomposer.model must be a non-empty string");
+  if (config.decomposer.provider === "gateway") {
+    // model is optional: null uses the session default; a set value is a
+    // "<provider>/<model>" or bare-model ref resolved by core's model selection.
+    if (config.decomposer.model != null && config.decomposer.model.trim() === "") {
+      throw new Error("decomposer.model must be null or a non-empty model ref when provider is \"gateway\"");
+    }
+  } else if (!config.decomposer.model || config.decomposer.model.trim() === "") {
+    throw new Error(`decomposer.model is required for provider "${config.decomposer.provider}"`);
   }
   if (config.embedding.backend === "local" && (!config.embedding.model || config.embedding.model.trim() === "")) {
     throw new Error("embedding.model must be a non-empty string when backend is 'local'");

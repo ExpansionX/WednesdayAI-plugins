@@ -43,10 +43,10 @@ describe("formatSkillContext", () => {
     const result = formatSkillContext(
       [{ name: "github", description: "Git", location: "/x", source: "bundled", score: 0.9 }],
       ["task"],
-      "qwen/qwen-2.5-7b-instruct",
+      "test-model",
     );
 
-    expect(result.prependContext![0].metadata!.decomposerModel).toBe("qwen/qwen-2.5-7b-instruct");
+    expect(result.prependContext![0].metadata!.decomposerModel).toBe("test-model");
   });
 
   it("estimates token count", () => {

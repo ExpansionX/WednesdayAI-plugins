@@ -86,7 +86,7 @@ describe("Decomposer", () => {
       const decomposer = new Decomposer({
         fetchRaw: mockFetchRaw,
         provider: "openrouter",
-        model: "qwen/qwen-2.5-7b-instruct",
+        model: "test-model",
         apiKey: "sk-test",
       });
 
@@ -660,5 +660,77 @@ describe("envApiKey", () => {
     withEnv("OPENROUTER_API_KEY", undefined, () => {
       expect(envApiKey("openrouter")).toBeNull();
     });
+  });
+});
+
+describe("Decomposer gateway provider", () => {
+  const okRun = (result: Record<string, unknown>) => vi.fn().mockResolvedValue(result);
+
+  it("routes through the analysis runtime with model ref, session key, and JSON format", async () => {
+    const run = okRun({ status: "ok", json: { subTasks: ["a", "b"] } });
+    const decomposer = new Decomposer({ provider: "gateway", analysis: { run }, model: "bifrost/local-small", maxTokens: 256, temperature: 0.1 });
+
+    const result = await decomposer.decompose("some query text", undefined, 10, undefined, "agent:main:whatsapp:x");
+    expect(result.subTasks).toEqual(["a", "b"]);
+    expect(result.errors).toBeUndefined();
+    const params = run.mock.calls[0][0];
+    expect(params.purpose).toBe("skillweaver.decompose");
+    expect(params.model).toBe("bifrost/local-small");
+    expect(params.sessionKey).toBe("agent:main:whatsapp:x");
+    expect(params.responseFormat).toBe("json");
+    expect(params.input).toContain("some query text");
+  });
+
+  it("omits model and sessionKey when unset (session default model)", async () => {
+    const run = okRun({ status: "ok", json: { subTasks: ["a"] } });
+    const decomposer = new Decomposer({ provider: "gateway", analysis: { run } });
+
+    await decomposer.decompose("query");
+    const params = run.mock.calls[0][0];
+    expect("model" in params).toBe(false);
+    expect("sessionKey" in params).toBe(false);
+  });
+
+  it("falls back to text parsing when json has no subTasks", async () => {
+    const run = okRun({ status: "ok", text: '{"subTasks": ["x"]}' });
+    const decomposer = new Decomposer({ provider: "gateway", analysis: { run } });
+
+    const result = await decomposer.decompose("query");
+    expect(result.subTasks).toEqual(["x"]);
+  });
+
+  it("maps timeout status to a timeout error", async () => {
+    const run = okRun({ status: "timeout", error: "run timed out" });
+    const decomposer = new Decomposer({ provider: "gateway", analysis: { run } });
+
+    const result = await decomposer.decompose("query");
+    expect(result.subTasks).toEqual([]);
+    expect(result.errors?.[0].type).toBe("timeout");
+  });
+
+  it("maps error/rejected statuses to errors without throwing", async () => {
+    for (const status of ["error", "rejected"]) {
+      const run = okRun({ status, error: `analysis ${status}` });
+      const decomposer = new Decomposer({ provider: "gateway", analysis: { run } });
+      const result = await decomposer.decompose("query");
+      expect(result.subTasks).toEqual([]);
+      expect(result.errors?.[0].type).toBe("unknown");
+    }
+  });
+
+  it("caps subTasks at maxSubTasks", async () => {
+    const run = okRun({ status: "ok", json: { subTasks: ["1", "2", "3", "4"] } });
+    const decomposer = new Decomposer({ provider: "gateway", analysis: { run } });
+
+    const result = await decomposer.decompose("query", undefined, 2);
+    expect(result.subTasks).toEqual(["1", "2"]);
+  });
+
+  it("throws at construction without an analysis runtime", () => {
+    expect(() => new Decomposer({ provider: "gateway" })).toThrow(/analysis runtime/);
+  });
+
+  it("throws at construction for non-gateway provider without a model", () => {
+    expect(() => new Decomposer({ provider: "openrouter" })).toThrow(/model is required/);
   });
 });
