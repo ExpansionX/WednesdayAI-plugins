@@ -588,3 +588,51 @@ describe("createCollectHandler retrieval-only mode (decomposer: null)", () => {
     expect(result.prependContext?.length ?? 0).toBeGreaterThan(0);
   });
 });
+
+describe("createCollectHandler inbound metadata stripping", () => {
+  it("routes on the bare user text, not the metadata wrapper", async () => {
+    mockDecomposer.decompose.mockReset();
+    mockDecomposer.decompose.mockResolvedValue({ subTasks: [], pass: 1 });
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer,
+      retriever: mockRetriever,
+      sadEnabled: false,
+      minQueryLength: 20,
+    });
+
+    const content = `Conversation info (untrusted metadata):
+\`\`\`json
+{"message_id": "5760", "sender": "David"}
+\`\`\`
+
+check node exec now and report the version`;
+    await handler({ cleanUserMessage: { content } });
+    expect(mockDecomposer.decompose).toHaveBeenCalledWith(
+      "check node exec now and report the version",
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+      undefined,
+    );
+  });
+
+  it("skips short queries after metadata is stripped", async () => {
+    mockDecomposer.decompose.mockReset();
+    const handler = createCollectHandler({
+      decomposer: mockDecomposer,
+      retriever: mockRetriever,
+      sadEnabled: false,
+      minQueryLength: 20,
+    });
+
+    const content = `Sender (untrusted metadata):
+\`\`\`json
+{"name": "David"}
+\`\`\`
+
+hi`;
+    const result = await handler({ cleanUserMessage: { content } });
+    expect(result).toEqual({});
+    expect(mockDecomposer.decompose).not.toHaveBeenCalled();
+  });
+});

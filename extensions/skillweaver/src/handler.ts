@@ -2,6 +2,7 @@ import { createSubsystemLogger } from "./logger.js";
 import type { Decomposer } from "./decomposer.js";
 import type { Retriever } from "./retriever.js";
 import { formatSkillContext } from "./context-injector.js";
+import { stripInboundMetadata } from "./strip-inbound-meta.js";
 
 const log = createSubsystemLogger("skillweaver/handler");
 
@@ -103,7 +104,11 @@ export function createCollectHandler(opts: HandlerOptions) {
     // string, so the event.prompt fallback is redundant there; it covers callers
     // that pass image-only or empty message content. event.prompt is the clean
     // pre-envelope prompt (envelope rendering happens after context.collect).
-    const text = extractMessageText(event.cleanUserMessage) || (typeof event.prompt === "string" ? event.prompt : "");
+    // cleanUserMessage is only clean of the session envelope — core bakes
+    // inbound metadata blocks (Conversation info, Sender, …) into the stored
+    // content upstream, so strip them before routing on the message text.
+    const rawText = extractMessageText(event.cleanUserMessage) || (typeof event.prompt === "string" ? event.prompt : "");
+    const text = stripInboundMetadata(rawText);
     if (!text || text.length < opts.minQueryLength) return {};
 
     if (isSubagentSessionKey(ctx?.sessionKey)) return {};
