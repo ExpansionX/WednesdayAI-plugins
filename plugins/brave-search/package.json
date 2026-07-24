@@ -1,6 +1,6 @@
 {
   "name": "@wednesdayai/brave-search",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WednesdayAI Brave Search provider plugin",
   "type": "module",
   "private": false,
