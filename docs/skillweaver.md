@@ -150,6 +150,30 @@ Full config reference: [extensions/skillweaver/README.md](/extensions/skillweave
 | Prompt injection defense | ✅ Sanitizes skill descriptions and queries |
 | Abort signal propagation | ✅ Full pipeline timeout support |
 
+## Status & Deployment
+
+**Current state (2026-07-24):** working. The v1 handler silently no-oped on every query — it read
+`event.cleanUserMessage.text`, but pi-ai's `UserMessage` only carries `content` (string or typed
+block array). Fixed in `508d08f`; the sub-agent guard now mirrors core's canonical
+`isSubagentSessionKey` exactly (`19a1ead`, post adversarial review — no blocking findings).
+Contracts are verified against `WednesdayAI-core` (`src/plugins/types.ts`,
+`src/sessions/session-key-utils.ts`); note the plugin-sdk import is still a compile-time stub, so
+re-verify against core when the hook contract changes.
+
+**Deploy to a live gateway:**
+
+```bash
+cd extensions/skillweaver && npm run build
+rsync -a --delete dist/ ~/.openclaw/extensions/skillweaver/dist/
+rsync -a --delete src/  ~/.openclaw/extensions/skillweaver/src/
+cp index.ts openclaw.plugin.json package.json README.md CHANGELOG.md ~/.openclaw/extensions/skillweaver/
+systemctl --user restart openclaw-gateway.service
+journalctl --user -u openclaw-gateway.service --since "-2 min" | grep skillweaver   # expect "skillweaver: registered"
+```
+
+The plugin must be listed in `plugins.allow` and enabled via `plugins.entries.skillweaver.enabled`
+in `~/.openclaw/openclaw.json` (already true on the primary deployment).
+
 ## Links
 
 - [Plugin README](/extensions/skillweaver/README.md)
