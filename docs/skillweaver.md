@@ -1,3 +1,14 @@
+---
+audience: user, admin, developer
+component: skillweaver
+sources:
+  - extensions/skillweaver/src/config.ts
+  - extensions/skillweaver/src/decomposer.ts
+  - extensions/skillweaver/openclaw.plugin.json
+  - extensions/skillweaver/index.ts
+generated: 2026-07-25
+---
+
 # SkillWeaver
 
 **Status:** Shipped | **Plugin ID:** `skillweaver` | **Package:** `@wednesdayai/skillweaver`
@@ -62,18 +73,21 @@ For maximum context savings, set skills mode to `"names"` so full descriptions a
 
 ### 2. Configure the Decomposer
 
-The decomposer breaks queries into sub-tasks. Default uses OpenRouter with a small model:
+The decomposer breaks queries into sub-tasks. By default (`provider: "gateway"`) it routes
+through the gateway's own model layer via core's analysis runtime — no API keys, no separate
+provider setup — using the **current session's default model**. To pin a specific model from
+your core `models` config:
 
 ```json
 {
   "decomposer": {
-    "provider": "openrouter",
-    "model": "qwen/qwen2.5-7b-instruct"
+    "model": "<provider>/<model>"
   }
 }
 ```
 
-Supported providers: `openrouter`, `openai`, `anthropic`, `openai-compatible`.
+Supported providers: `gateway` (default), plus `openrouter`, `openai`, `anthropic`,
+`openai-compatible` for direct calls (these require `decomposer.model` and an API key).
 
 ### 3. Tune Retrieval (Optional)
 
@@ -96,6 +110,9 @@ When a user sends a complex query like "download this dataset, analyze it, and e
 2. Retrieves matching skills for each sub-task
 3. Injects only those skill descriptions into the context
 
+Inbound channel metadata (Conversation info / Sender blocks) is stripped before routing, so
+decomposition operates on the bare user message.
+
 ### Skill-Aware Decomposition (SAD)
 
 Two-pass decomposition for improved accuracy:
@@ -117,11 +134,12 @@ Routing is automatically skipped for sub-agent events to prevent recursive decom
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | boolean | `true` | Master switch |
-| `decomposer.provider` | string | `"openrouter"` | LLM provider |
-| `decomposer.model` | string | `"qwen/qwen2.5-7b-instruct"` | Decomposition model |
+| `decomposer.provider` | string | `"gateway"` | `gateway` routes via core's analysis runtime; direct providers also supported |
+| `decomposer.model` | string \| null | `null` | Gateway: optional `<provider>/<model>` ref; `null` = session default model. Required for direct providers |
+| `decomposer.maxTokens` | integer | `4096` | Output cap (50–16384); reasoning models spend thinking tokens from it first |
 | `embedding.backend` | string | `"local"` | Embedding backend |
 | `retrieval.topK` | integer | `3` | Skills per sub-task |
-| `retrieval.minQueryLength` | integer | `20` | Min query length to route |
+| `retrieval.minQueryLength` | integer | `20` | Min query length to route (after metadata stripping) |
 | `sad.enabled` | boolean | `true` | Enable 2-pass SAD |
 | `skills.dirs` | string[] | `[]` | Custom skill directories |
 
@@ -133,7 +151,10 @@ Full config reference: [extensions/skillweaver/README.md](/extensions/skillweave
 |---------|-------|-----|
 | Skills not routing | Query too short | Increase `retrieval.minQueryLength` or use longer queries |
 | Slow first response | Local model loading | Normal — subsequent calls are instant |
-| Decomposer 401 | Missing API key | Set `decomposer.apiKey` or agent provider credentials |
+| `decompose failed … analysis empty` | Reasoning model spent the whole token budget thinking | Raise `decomposer.maxTokens` or pin a non-reasoning model |
+| Decomposer 400 (gateway) | `decomposer.model` ref not live on the model router | Verify the ref against the router, not just the core catalog |
+| Decomposer 401 (direct providers) | Missing API key | Set `decomposer.apiKey` or the provider env var (`OPENROUTER_API_KEY`, …) |
+| Startup warn: analysis pathway missing | Core build predates `api.runtime.analysis` | Plugin runs retrieval-only; upgrade core to restore decomposition |
 | High context usage | Too many skills returned | Reduce `retrieval.topK` |
 
 ## Capabilities
@@ -141,10 +162,13 @@ Full config reference: [extensions/skillweaver/README.md](/extensions/skillweave
 | Capability | Status |
 |------------|--------|
 | Query decomposition | ✅ Pass-1 + Pass-2 (SAD) |
+| Gateway-native LLM routing | ✅ Via core analysis runtime (`api.runtime.analysis`), session-default or pinned model, no plugin API keys |
 | Vector retrieval | ✅ HNSW cosine similarity |
 | Local embedding | ✅ all-MiniLM-L6-v2 via @xenova/transformers |
 | Cloud embedding | ✅ OpenAI text-embedding-3-small |
 | Custom embedding | ✅ Any OpenAI-compatible endpoint |
+| Inbound metadata stripping | ✅ Routes on the bare user message, not the channel wrapper |
+| Retrieval-only fallback | ✅ Degrades gracefully when no decomposer is available |
 | File watching | ✅ Auto-rebuild on SKILL.md changes |
 | Sub-agent isolation | ✅ Skips routing for sub-agent events |
 | Prompt injection defense | ✅ Sanitizes skill descriptions and queries |
@@ -152,13 +176,24 @@ Full config reference: [extensions/skillweaver/README.md](/extensions/skillweave
 
 ## Status & Deployment
 
-**Current state (2026-07-24):** working. The v1 handler silently no-oped on every query — it read
-`event.cleanUserMessage.text`, but pi-ai's `UserMessage` only carries `content` (string or typed
-block array). Fixed in `508d08f`; the sub-agent guard now mirrors core's canonical
-`isSubagentSessionKey` exactly (`19a1ead`, post adversarial review — no blocking findings).
-Contracts are verified against `WednesdayAI-core` (`src/plugins/types.ts`,
-`src/sessions/session-key-utils.ts`); note the plugin-sdk import is still a compile-time stub, so
-re-verify against core when the hook contract changes.
+**Current state (2026-07-25):** working in production. History of field fixes, newest first:
+
+- **Inbound metadata stripping** (`8f556d5`): `cleanUserMessage` at `context.collect` still
+  contains core's inbound metadata blocks; the handler now strips them (port of core's canonical
+  `strip-inbound-meta.ts` — sentinel list must stay in sync). A core-side `rawUserText` field on
+  the collect event is planned to remove this liability.
+- **Reasoning-model token budget** (`32da959`): decomposer `maxTokens` default raised 256 → 4096;
+  thinking tokens count against the cap, so 256 yielded empty responses.
+- **Gateway-native decomposition** (`d70506f`): decomposer routes via `api.runtime.analysis`
+  (session-default or config-pinned model); no hardcoded models or plugin API keys anywhere.
+  Supersedes the interim env-key fallback fix (`73cbf32`).
+- **v1 silent no-op** (`508d08f`): handler read `event.cleanUserMessage.text`, but pi-ai's
+  `UserMessage` only carries `content`. Sub-agent guard mirrors core's `isSubagentSessionKey`
+  (`19a1ead`, post adversarial review).
+
+Contracts are verified against `WednesdayAI-core` (source of truth for hooks/extensions/
+plugin-sdk); the plugin-sdk import is still a compile-time stub, so re-verify against core when
+the hook contract changes.
 
 **Deploy to a live gateway:**
 
