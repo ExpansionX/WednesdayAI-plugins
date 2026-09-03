@@ -1,0 +1,12 @@
+{
+  "id": "shohin",
+  "name": "Shohin",
+  "description": "Unified work system for WednesdayAI: work kernel (projects, items, runs, approvals) plus an agent-run software factory. Design phase; not yet installable.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" }
+    }
+  }
+}

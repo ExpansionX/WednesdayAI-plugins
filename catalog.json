@@ -21,6 +21,13 @@
       "description": "Test fixture exercising api.on() lifecycle hooks. Permanent resident — not published.",
       "kind": "misc",
       "npmSpec": "@wednesdayai/lifecycle-fixture"
+    },
+    {
+      "id": "shohin",
+      "name": "Shohin",
+      "description": "Unified work system for WednesdayAI: work kernel (projects, items, runs, approvals) plus an agent-run software factory. Design phase; not yet installable.",
+      "kind": "misc",
+      "npmSpec": "@wednesdayai/shohin"
     }
   ]
 }
