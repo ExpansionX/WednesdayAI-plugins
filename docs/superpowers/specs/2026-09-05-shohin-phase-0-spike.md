@@ -45,7 +45,7 @@ SC6: The report lists every binary, environment variable, auth file and git prec
 → US6
 SC7: With lane worktree creation forced to fail, the report records whether the runner wrote to the shared tree, and names the environment setting or patch that makes it fail closed, with the observed behaviour after applying it.
 → US7
-SC8: After the report is committed, `git status` is clean and `git ls-files` shows no file under a spike directory and no change to `plugins/shohin/index.ts` or its manifest; the target topic's branch and plan directory are removed; `~/.openclaw/extensions/shohin-spike` does not exist and `wednesdayai plugins list` does not show it; the `openclaw-gateway` unit is still active.
+SC8: After the report is committed, `git status` is clean; `git ls-files plugins/shohin` lists no path containing `/spike/`; a `git diff` of `plugins/shohin` against the pre-spike tree, with the spike directory excluded, is empty; the target topic's branch and plan directory are removed; `~/.openclaw/extensions/shohin-spike` does not exist and `wednesdayai plugins list` does not show it; the `openclaw-gateway` unit is still active.
 → US8
 
 ## Users
@@ -92,7 +92,7 @@ Order, chosen so each probe reuses the previous one's state and the destructive 
 5. **Attention probe**: run a task whose gate cannot pass so the runner raises attention; inspect the notify file and run-state. Completes SC4.
 6. **Gateway-death probe**: `systemctl --user kill --signal=SIGKILL openclaw-gateway` mid-run; observe the scope, the watchdog and the ceiling; observe the unit's restart and the service's recovery sweep in the journal; then run `--reset` and `--reset full` in the same worktree and diff refs and files before and after. Produces SC5.
 7. **Lane-failure probe**: make the runner's lane worktree creation fail (read-only `TMPDIR`); observe where it writes; apply the fail-closed change to the spike's copy of the runner and re-observe. Produces SC7.
-8. **Cleanup**: uninstall the `shohin-spike` extension from the gateway, delete `plugins/shohin/spike/`, the target topic's plan directory and branch; commit the report; verify SC8. The gateway stays.
+8. **Cleanup**: uninstall the `shohin-spike` extension from the gateway, delete `plugins/shohin/spike/`, the target topic's plan directory and branch; commit the report; verify SC8 (no `/spike/` path remains under `plugins/shohin`, and the rest of that tree matches the pre-spike commit). The gateway stays.
 
 Each probe is a task in the plan. The report, not the code, is what precheck's downstream gates measure.
 
@@ -142,4 +142,4 @@ TS4: Signal probe: a task whose scope test cannot pass forces attention; `attent
 TS5: Gateway-death probe: `systemctl --user kill --signal=SIGKILL openclaw-gateway` while a task is mid-attempt; `systemctl --user status` of the run scope every 15 seconds until it ends; `journalctl --user -u openclaw-gateway` for kill, restart, plugin-load and recovery-sweep lines with timestamps; `git rev-list --all` and `ls -la docs/plans/<topic>` before and after `--reset`, then after `--reset full` (SC5).
 TS6: Inventory probe: `/proc/<pid>/environ` of the runner and of one OpenCode child, `which` of every binary the runner invoked (from `strace -f -e execve` or the runner's own log), `sha256sum` of the runner copy, and the per-attempt usage lines totalled (SC6).
 TS7: Lane-failure probe: run with `TMPDIR` pointing at a read-only directory; `git status` of the shared tree and the worktree after the run; apply the fail-closed patch to the spike runner copy; repeat; both outcomes captured (SC7).
-TS8: Cleanup verification: `git status --porcelain` empty, `git ls-files plugins/shohin | grep -c spike` equals 0, `git diff <base> -- plugins/shohin/index.ts plugins/shohin/openclaw.plugin.json` empty, `git branch --list 'spike/*'` empty, `ls docs/plans/shohin-spike-target` absent, `ls ~/.openclaw/extensions/shohin-spike` absent, `wednesdayai plugins list` without shohin-spike, `systemctl --user is-active openclaw-gateway` = active (SC8).
+TS8: Cleanup verification: `git status --porcelain` empty, `git ls-files plugins/shohin | grep -c spike` equals 0, `git diff <pre-spike-sha> -- plugins/shohin ':!plugins/shohin/spike'` empty, `git branch --list 'spike/*'` empty, `ls docs/plans/shohin-spike-target` absent, `ls ~/.openclaw/extensions/shohin-spike` absent, `wednesdayai plugins list` without shohin-spike, `systemctl --user is-active openclaw-gateway` = active (SC8).
