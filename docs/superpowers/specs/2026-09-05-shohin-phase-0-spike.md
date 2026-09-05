@@ -39,31 +39,32 @@ SC3b: The report records wall-clock and token usage for the same task once with 
 → US3
 SC4: The notify file contains one JSON line per attention item the runner raised, the run-state file reaches a terminal state, and the report lists the authoritative signal set the supervisor will use (exit status, commits on the branch, per-task gate output) beside the hint set it will not trust.
 → US4
-SC5: With the supervisor killed mid-run as the stand-in for gateway death (D7), the report records whether the run continued, stopped at the scope's `RuntimeMaxSec`, or stopped on the watchdog; records the worktree state on restart; and records the output of `wai-dag-run.sh --reset` and of `--reset full` on that worktree, naming exactly which files and commits each discarded.
+SC5: With the gateway killed mid-run (`SIGKILL` on the `openclaw-gateway` user unit), the report records whether the run continued, stopped at the scope's `RuntimeMaxSec`, or stopped on the watchdog; records the journal timestamps of the kill, the unit restart, the plugin load and the recovery sweep; records the worktree state after restart; and records the output of `wai-dag-run.sh --reset` and of `--reset full` on that worktree, naming exactly which files and commits each discarded.
 → US5
 SC6: The report lists every binary, environment variable, auth file and git precondition the runner required, and the sha256 of the runner script that ran, and records per-task wall-clock and cost including validator and assessor calls.
 → US6
 SC7: With lane worktree creation forced to fail, the report records whether the runner wrote to the shared tree, and names the environment setting or patch that makes it fail closed, with the observed behaviour after applying it.
 → US7
-SC8: After the report is committed, `git status` is clean and `git ls-files` shows no file under a spike directory and no change to `plugins/shohin/index.ts` or its manifest; the target topic's branch and plan directory are removed.
+SC8: After the report is committed, `git status` is clean and `git ls-files` shows no file under a spike directory and no change to `plugins/shohin/index.ts` or its manifest; the target topic's branch and plan directory are removed; `~/.openclaw/extensions/shohin-spike` does not exist and `wednesdayai plugins list` does not show it; the `openclaw-gateway` unit is still active.
 → US8
 
 ## Users
 - **David, as operator.** Decides, from the report, whether Phase 1 proceeds on the DAG runner as designed, on a modified runner, or on a different first executor.
 - **The Phase 1 implementer** (human or board-dispatched). Reads the report's adapter contract, environment list, signal set and recovery policy as the ground truth for `src/factory/executor`, `src/factory/supervisor` and `src/factory/verify`.
 - **The WAI runner maintainers** (agent-plugins). Receive a concrete list of any runner changes the spike shows are needed: an agent mode for OpenCode, a fail-closed lane worktree, a notify payload change.
-- **Not affected:** MondayDev personas, work-tracker users, WednesdayAI-core. The spike touches no shared state and installs nothing.
+- **The operator's development host.** Gains a persistent WednesdayAI development gateway (`openclaw-gateway` systemd user unit) installed by the spike's first task; it stays after the spike as shared development and testing infrastructure for every later Shohin phase.
+- **Not affected:** MondayDev personas, work-tracker users, WednesdayAI-core source. The spike changes no repository other than this one.
 
 
 ## Constraints
-- **Throwaway.** Spike code lives under `plugins/shohin/spike/` on the workstream branch and is deleted before close. It registers nothing that persists: no HTTP route, no tool, no cron job.
+- **Throwaway plugin, durable gateway.** Spike code lives under `plugins/shohin/spike/` on the workstream branch, is installed into the dev gateway as extension `shohin-spike`, and both the source and the installed copy are deleted before close. It registers only a service and admin-scoped gateway methods, never an HTTP route, tool or cron job. The development gateway itself is host infrastructure and persists.
 - **No core changes.** WednesdayAI-core is read-only. If a core seam appears necessary, the report says so and Phase 1 decides.
 - **No runner changes merged.** The spike may patch its own copy of the runner to test a fail-closed or agent-mode hypothesis, and records the diff in the report. Changes to agent-plugins are proposed, not made.
 - **Prepared target topic.** The runner needs a real topic with a committed precheck token and a plan that passes lint, so the spike prepares a separate throwaway topic in this repository (two trivial tasks against the Shohin shell) through `/wai:prd-new`, `/wai:spec`, `/wai:precheck` and `/wai:decompose` by hand, runs without `WAI_DAG_TEST_MODE`, and removes the topic afterwards.
 - **Credential-free executor.** The spike's environment allow-list is the one in `plugins/shohin/docs/PROGRAM.md` §2: `PATH`, an ephemeral `HOME`, the harness's own auth, and the runner's own variables. No gateway token, no operator git credential helper, no SSH agent socket, no `gh` state. The report records the executor's `/proc/<pid>/environ`.
 - **Worker ladder.** `WAI_DAG_WORKER_MODELS` carries the model ids behind `subagent-glm-flash`, `subagent-gpt-terra` and `subagent-gpt-sol`, in that order, read from the operator's OpenCode agent definitions.
 - **Budget.** Abort any single task attempt that exceeds 30 minutes; abort the spike if total spend exceeds the operator's stated cap for the day; record both in the report.
-- **Host.** Runs on the operator's Linux host with a systemd user session, as the gateway does.
+- **Host and gateway.** Runs on the operator's Linux host under a WednesdayAI development gateway installed from the local core source (version-matched to the plugin SDK), running as the `openclaw-gateway` systemd user unit with channels disabled and SQLite session storage. No gateway exists on this host today; installing it is the spike's first task and its method is recorded in the report.
 - **Reference material is read-only.** OpenClaw, vk-swarm, MondayDev and agent-plugins are cited by path in the report and never modified.
 - **Report is the deliverable.** It answers the seven exit questions in `plugins/shohin/docs/PROGRAM.md` §2 with evidence and ends with the proposed `Executor` adapter contract and recovery policy for Phase 1.
 
@@ -75,30 +76,33 @@ SC8: After the report is committed, `git status` is clean and `git ls-files` sho
 - Postgres, the board page, personas, approvals, migration from work-tracker.
 - Benchmarking model quality across the ladder; the spike measures reachability, cost and time, not correctness of the code the workers produce.
 - Running the spike on any host other than the operator's.
-- Standing up a WednesdayAI gateway on this host for the spike (see D1); no gateway is configured here today and the questions do not need one.
+- Connecting the development gateway to any channel, provider credentials beyond what the spike needs, or production data; it is a development instance only.
 
 
 ## Approach
-Build a **standalone supervisor prototype** (a Node script under `plugins/shohin/spike/`, run directly with `node`, not registered with any gateway) that does exactly what the Phase 1 supervisor will do to an executor, and drive it through seven probes in a fixed order against a throwaway target topic. Every probe appends a fenced evidence block to `dev-docs/workstreams/shohin-phase-0-spike/spike-report.md`; the report's last section proposes the `Executor` adapter contract and the recovery policy for Phase 1.
+Install a **development WednesdayAI gateway** on this host from the local core source, then build a **throwaway plugin** (`plugins/shohin/spike/`, installed as extension `shohin-spike`) whose `registerService` supervisor does exactly what the Phase 1 supervisor will do to an executor, and drive it through seven probes in a fixed order against a throwaway target topic. Running inside the real gateway means gateway death is real: `SIGKILL` on the `openclaw-gateway` unit, followed by the unit's restart and the service's boot-time recovery sweep. Every probe appends a fenced evidence block to `dev-docs/workstreams/shohin-phase-0-spike/spike-report.md`; the report's last section proposes the `Executor` adapter contract and the recovery policy for Phase 1.
 
 Order, chosen so each probe reuses the previous one's state and the destructive probes come last:
 
+0. **Install the dev gateway**: build core from `/data/Code/WednesdayAI-core` (`pnpm install`, `pnpm ui:build`, `pnpm build`, `npm pack`, `npm install -g ./wednesdayai-<version>.tgz`), run `wednesdayai onboard --install-daemon` with channels skipped and SQLite storage, confirm `systemctl --user status openclaw-gateway` and the control UI on port 18789. Record the exact commands, versions and config in the report.
 1. **Prepare** the target topic `shohin-spike-target` (two trivial tasks against the Shohin shell) through the WAI flow by hand; commit its precheck token. Record the installed runner's sha256.
 2. **Baseline run** inside a `systemd-run --user --scope` with a runtime ceiling, an ephemeral HOME and the allow-listed environment, `WAI_DAG_WORKER_MODELS` set to the three model ids, cold OpenCode. Iterate the HOME copy-in list until OpenCode authenticates. Produces SC2, SC3a, SC6, SC4 (terminal path).
 3. **Attach run** of the same topic against a warm `opencode serve` via `WAI_DAG_OPENCODE_SERVER`. Produces SC3b.
 4. **Cancel probe**: start a run, stop the scope mid-task, list processes and commits. Produces SC1.
 5. **Attention probe**: run a task whose gate cannot pass so the runner raises attention; inspect the notify file and run-state. Completes SC4.
-6. **Supervisor-death probe**: SIGKILL the supervisor script mid-run (the stand-in for gateway death, see D7); observe the scope, the watchdog and the ceiling; restart the supervisor; run `--reset` then `--reset full` in the same worktree and diff refs and files before and after. Produces SC5.
+6. **Gateway-death probe**: `systemctl --user kill --signal=SIGKILL openclaw-gateway` mid-run; observe the scope, the watchdog and the ceiling; observe the unit's restart and the service's recovery sweep in the journal; then run `--reset` and `--reset full` in the same worktree and diff refs and files before and after. Produces SC5.
 7. **Lane-failure probe**: make the runner's lane worktree creation fail (read-only `TMPDIR`); observe where it writes; apply the fail-closed change to the spike's copy of the runner and re-observe. Produces SC7.
-8. **Cleanup**: delete `plugins/shohin/spike/`, the target topic's plan directory and branch; commit the report; verify SC8.
+8. **Cleanup**: uninstall the `shohin-spike` extension from the gateway, delete `plugins/shohin/spike/`, the target topic's plan directory and branch; commit the report; verify SC8. The gateway stays.
 
 Each probe is a task in the plan. The report, not the code, is what precheck's downstream gates measure.
 
 
 ## Design
-**Components (all under `plugins/shohin/spike/`, all deleted at close):**
+**Development gateway (persistent host infrastructure):** WednesdayAI built from the local core source so its `plugin-sdk` matches what this repo compiles against; installed globally from the packed tarball; daemonised with `wednesdayai onboard --install-daemon` as the `openclaw-gateway` systemd user unit; configured with `OPENCLAW_SKIP_CHANNELS=1`, SQLite session storage, the control UI on 18789, and no channel accounts. The report records the unit file, the `Restart=` policy, the config file and the versions.
 
-- `supervisor.mjs`: builds the run directory (`0700`), builds the ephemeral HOME from `home.allow` (a list of paths copied from the operator's HOME, starting empty and grown by observation), builds the environment from `env.allow`, launches `systemd-run --user --scope --unit=shohin-spike-<runId> --property=RuntimeMaxSec=<ceiling> -- watchdog.sh <runner> <topic>`, records the scope unit, pid and pid start time, tails `<runDir>/attention.jsonl` and `docs/plans/<topic>/.wai-run-state.json`, writes a heartbeat file every 10 seconds, and on `cancel` runs `systemctl --user kill --signal=SIGTERM` then `SIGKILL` on the unit. It never reads the runner's files as truth: after exit it enumerates commits on the branch and re-runs `task-gate.sh --commit <sha>` per task.
+**Spike plugin (`plugins/shohin/spike/`, installed by copy to `~/.openclaw/extensions/shohin-spike/`, all deleted at close):** a minimal `openclaw.plugin.json` with id `shohin-spike`, an `index.ts` that calls `registerService({ id: 'shohin-spike-supervisor', start, stop })` and `registerGatewayMethod` for `shohinSpike.run`, `shohinSpike.cancel` and `shohinSpike.status` (admin-scoped by default), driven from the operator's shell with `wednesdayai gateway call shohinSpike.run --params '{...}'` and friends (A13). The service body is the supervisor:
+
+- `supervisor.ts`: builds the run directory (`0700`), builds the ephemeral HOME from `home.allow` (a list of paths copied from the operator's HOME, starting empty and grown by observation), builds the environment from `env.allow`, launches `systemd-run --user --scope --unit=shohin-spike-<runId> --property=RuntimeMaxSec=<ceiling> -- watchdog.sh <runner> <topic>`, records the scope unit, pid and pid start time, tails `<runDir>/attention.jsonl` and `docs/plans/<topic>/.wai-run-state.json`, writes a heartbeat file every 10 seconds, and on `cancel` runs `systemctl --user kill --signal=SIGTERM` then `SIGKILL` on the unit. It never reads the runner's files as truth: after exit it enumerates commits on the branch and re-runs `task-gate.sh --commit <sha>` per task.
 - `watchdog.sh`: runs inside the scope; execs the runner in the background, polls the supervisor heartbeat file, and kills its own process tree if the heartbeat is older than 60 seconds. This is the mechanism that answers whether a run outlives its supervisor.
 - `notify.sh`: the `WAI_DAG_NOTIFY_CMD` target; appends `{topic, id, reason, at}` as one JSON line to `<runDir>/attention.jsonl`.
 - `runner/`: a copy of the installed runner (`~/.agents/wai/scripts/`, sha256 recorded) so hypotheses (fail-closed lane worktree, `--agent` mode) can be patched without touching agent-plugins; every patch is recorded as a diff in the report.
@@ -109,23 +113,25 @@ Each probe is a task in the plan. The report, not the code, is what precheck's d
 
 **Evidence model:** the report has one section per success criterion. Each contains the exact command, the raw output, and a one-paragraph reading. Hint sources (notify file, run-state file) are always labelled as hints; the truth set (exit status, `git log` on the branch, gate output) is labelled as truth. The final section states the proposed `Executor` interface (name, `version`, `start`, `resume`, `status`, `cancel`, `events`, handle fields) and the recovery policy (which `--reset` mode, in which worktree, what it destroys, how a new start is refused until the old scope is confirmed stopped).
 
-**Stand-in for gateway death (D7):** no gateway is configured on this host, and the plugin-service lifecycle is a known SDK contract (`registerService` with `start`/`stop`). Killing `supervisor.mjs` with SIGKILL exercises the same failure the gateway's death would cause for a `registerService` timer: the supervisor's heartbeat stops and its tailers vanish while the scope lives on. The report states this equivalence and its limit (it does not test gateway restart ordering).
+**Gateway death (D7):** real. `systemctl --user kill --signal=SIGKILL openclaw-gateway` stops the supervisor's heartbeat and tailers while the scope lives on; the unit's `Restart=` policy brings the gateway back, the plugin loads, and the service's `start` runs the recovery sweep against the run directory. The journal timestamps of kill, restart, plugin load and sweep are captured, so restart ordering is observed rather than assumed.
 
 **Budget guard:** the supervisor enforces the 30-minute per-attempt abort by `RuntimeMaxSec` on the scope and by `WAI_DAG_MAX_ATTEMPTS=1` for the baseline; usage is read from the runner's per-attempt usage output and totalled in the report. The default day cap is USD 50 (D6), overridable by the operator before the run.
 
 
 ## Decisions
-- **D1 Where the supervisor prototype runs:** standalone Node script, not a plugin in a gateway. No gateway exists on this host; the seven questions concern the scope, HOME, runner and files, none of which need the plugin loader. `registerService` is a contract assumption (A9), not a probe.
+- **D1 Where the supervisor prototype runs:** as a real throwaway plugin service inside a development WednesdayAI gateway installed on this host (the operator's direction of 2026-09-05: a dev gateway is wanted for development and testing generally). This proves plugin loading, service lifecycle and recovery on restart, not only the scope mechanics.
 - **D2 Containment mechanism:** `systemd-run --user --scope`, probed working on this host (A1). Process group and container are recorded as fallback and Phase 8 respectively.
 - **D3 Target topic:** a separate throwaway topic prepared by hand, because the runner refuses to run without a committed precheck token and lint-clean plan, and running the spike against its own plan is circular.
 - **D4 Ephemeral HOME construction:** start from an empty allow-list and add files by observed OpenCode failure, rather than mirroring the operator's HOME, so the minimal set is discovered rather than assumed.
 - **D5 Runner version:** the installed copy under `~/.agents/wai/scripts/` (sha256 `4542740276d8...`), because that is what a plugin on this host would find on PATH; the repo source (sha256 `3fe1c1c05c58...`) differs and is recorded as a finding for agent-plugins.
 - **D6 Spend cap:** USD 50 for the spike day and 30 minutes per attempt, overridable by the operator; the runner's attempt ladder is capped at one attempt for the baseline so cost is attributable per rung.
-- **D7 Supervisor-death stand-in:** SIGKILL of `supervisor.mjs` rather than a real gateway; equivalence and limit stated in the report. **Irreversible:** no.
+- **D7 Gateway death:** real `SIGKILL` on the `openclaw-gateway` user unit, with restart ordering captured from the journal. **Irreversible:** no.
 - **D8 Ladder passing:** model ids in `WAI_DAG_WORKER_MODELS` first; only if that fails to reach the intended providers is the `--agent` patch tried on the spike's runner copy.
 - **D9 Cleanup is irreversible** (branch and plan directory deletion): the cleanup task is marked irreversible and requires the operator's approval token; ADR link: none needed, the deletion is of throwaway artifacts created by this workstream. Rationale recorded in `dev-docs/adr/0011` §5 (throwaway stays throwaway) by reference.
 
-None of D1 to D8 deletes code, removes a dependency or changes a contract. D9 deletes only artifacts this workstream created.
+- **D10 Gateway install method:** build from the local core source and install the packed tarball globally, then `onboard --install-daemon`; not the npm release (0.4.10, behind the local 0.4.11 and its plugin SDK) and not the in-tree `pnpm gateway:dev` (no systemd unit, so no real restart to observe). The gateway is durable host infrastructure, outside SC8's cleanup.
+
+None of D1 to D8 and D10 deletes code, removes a dependency or changes a contract. D9 deletes only artifacts this workstream created.
 
 
 ## Test strategy
@@ -133,7 +139,7 @@ TS1: Scope containment probe: start a run, from inside the run spawn a child tha
 TS2: Ephemeral HOME probe: run with an empty `home.allow`, capture the OpenCode error, add the single file it names, repeat until a task completes; the sequence of (file added, error before) pairs is the report table (SC2).
 TS3: Ladder and attach probe: baseline run with `WAI_DAG_WORKER_MODELS` set to the three model ids and the run log grepped for each `opencode run` argv; then the same topic reset and run with `WAI_DAG_OPENCODE_SERVER` pointing at a warm `opencode serve`; wall-clock and usage for both captured (SC3a, SC3b).
 TS4: Signal probe: a task whose scope test cannot pass forces attention; `attention.jsonl` line count versus attention items in the runner's own log, run-state terminal field, exit status, and a forged extra line appended to `attention.jsonl` shown to change nothing the supervisor concludes (SC4).
-TS5: Supervisor-death probe: SIGKILL `supervisor.mjs` while a task is mid-attempt; `systemctl --user status` of the scope every 15 seconds until it ends; restart the supervisor; `git rev-list --all` and `ls -la docs/plans/<topic>` before and after `--reset`, then after `--reset full` (SC5).
+TS5: Gateway-death probe: `systemctl --user kill --signal=SIGKILL openclaw-gateway` while a task is mid-attempt; `systemctl --user status` of the run scope every 15 seconds until it ends; `journalctl --user -u openclaw-gateway` for kill, restart, plugin-load and recovery-sweep lines with timestamps; `git rev-list --all` and `ls -la docs/plans/<topic>` before and after `--reset`, then after `--reset full` (SC5).
 TS6: Inventory probe: `/proc/<pid>/environ` of the runner and of one OpenCode child, `which` of every binary the runner invoked (from `strace -f -e execve` or the runner's own log), `sha256sum` of the runner copy, and the per-attempt usage lines totalled (SC6).
 TS7: Lane-failure probe: run with `TMPDIR` pointing at a read-only directory; `git status` of the shared tree and the worktree after the run; apply the fail-closed patch to the spike runner copy; repeat; both outcomes captured (SC7).
-TS8: Cleanup verification: `git status --porcelain` empty, `git ls-files plugins/shohin | grep -c spike` equals 0, `git diff <base> -- plugins/shohin/index.ts plugins/shohin/openclaw.plugin.json` empty, `git branch --list 'spike/*'` empty, `ls docs/plans/shohin-spike-target` absent (SC8).
+TS8: Cleanup verification: `git status --porcelain` empty, `git ls-files plugins/shohin | grep -c spike` equals 0, `git diff <base> -- plugins/shohin/index.ts plugins/shohin/openclaw.plugin.json` empty, `git branch --list 'spike/*'` empty, `ls docs/plans/shohin-spike-target` absent, `ls ~/.openclaw/extensions/shohin-spike` absent, `wednesdayai plugins list` without shohin-spike, `systemctl --user is-active openclaw-gateway` = active (SC8).

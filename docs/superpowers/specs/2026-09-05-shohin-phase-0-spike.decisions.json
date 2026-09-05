@@ -7,13 +7,13 @@
       "title": "Where the supervisor prototype runs",
       "options": [
         {
-          "label": "Standalone Node script under plugins/shohin/spike/, run with node",
-          "consequence": "Answers all seven exit questions with no gateway; the registerService lifecycle stays a contract assumption verified by reading the SDK types.",
+          "label": "Real throwaway plugin service inside a development WednesdayAI gateway installed on this host",
+          "consequence": "Proves plugin loading, registerService lifecycle and recovery after a real gateway restart; costs a one-time gateway install that then serves every later phase.",
           "chosen": true
         },
         {
-          "label": "Real plugin loaded by a scratch WednesdayAI gateway on this host",
-          "consequence": "Also proves plugin loading, at the cost of installing and configuring a gateway that does not exist here today and of coupling the spike to gateway auth and config.",
+          "label": "Standalone Node script under plugins/shohin/spike/, run with node",
+          "consequence": "Answers the scope, HOME and runner questions with no gateway, but leaves plugin loading and restart ordering as assumptions.",
           "chosen": false
         },
         {
@@ -22,7 +22,7 @@
           "chosen": false
         }
       ],
-      "rationale": "No gateway is configured on this host (A8). The questions are about the scope, HOME, runner and files. A Node prototype transfers directly into src/factory/supervisor."
+      "rationale": "The operator directed on 2026-09-05 that a development gateway can and should be installed on this host. With it available, the real plugin path costs little more than the script and answers strictly more."
     },
     {
       "id": "D2",
@@ -126,20 +126,20 @@
     },
     {
       "id": "D7",
-      "title": "Stand-in for gateway death",
+      "title": "How gateway death is exercised",
       "options": [
         {
-          "label": "SIGKILL the supervisor script mid-run",
-          "consequence": "Reproduces the observable a registerService timer would see: heartbeat stops, tailers vanish, scope lives on; does not test gateway restart ordering.",
+          "label": "SIGKILL the openclaw-gateway user unit mid-run and let its Restart= policy bring it back",
+          "consequence": "Observes the real failure and the real restart ordering: scope survives or not, watchdog fires or not, recovery sweep runs on plugin load.",
           "chosen": true
         },
         {
-          "label": "Kill a real gateway",
-          "consequence": "Requires D1's rejected option.",
+          "label": "SIGKILL a standalone supervisor script",
+          "consequence": "Reproduces heartbeat loss only; cannot observe restart ordering or the recovery sweep.",
           "chosen": false
         }
       ],
-      "rationale": "Same failure surface for the executor at a fraction of the setup."
+      "rationale": "D1 puts the supervisor inside the gateway, so the real event is available at no extra cost."
     },
     {
       "id": "D8",
@@ -169,6 +169,28 @@
         }
       ],
       "single_option_reason": "SC8 admits no other outcome; the only fork is who approves the deletion, and irreversible tasks always require the operator."
+    },
+    {
+      "id": "D10",
+      "title": "Gateway install method",
+      "options": [
+        {
+          "label": "Build /data/Code/WednesdayAI-core from source, npm pack, npm install -g the tarball, wednesdayai onboard --install-daemon",
+          "consequence": "Plugin SDK version matches what this repo compiles against; a real systemd user unit exists to kill and observe; install is documented in core AGENTS.md section 8.",
+          "chosen": true
+        },
+        {
+          "label": "npm install -g wednesdayai@latest (0.4.10)",
+          "consequence": "Fastest, but one version behind the local 0.4.11 source and its plugin-sdk; risks SDK mismatch findings that are not about the spike.",
+          "chosen": false
+        },
+        {
+          "label": "pnpm gateway:dev in the core checkout",
+          "consequence": "No systemd unit and no daemon, so gateway death and restart cannot be observed; channels skipped by default is the only advantage and onboard offers the same.",
+          "chosen": false
+        }
+      ],
+      "rationale": "The spike needs a real unit to kill and a matching SDK; the source build gives both. The dev gateway persists as host infrastructure by the operator's direction."
     }
   ],
   "obstacles": [
@@ -243,6 +265,18 @@
       "criterion": "SC5",
       "obstacle": "Pre-mortem: --reset full destroyed commits the report needed, and the recovery policy was written from memory.",
       "countermeasure": "TS5 captures git rev-list --all and the plan directory listing before every reset, and the worktree is cloned to a scratch path first."
+    },
+    {
+      "id": "O13",
+      "criterion": "SC5",
+      "obstacle": "The unit's Restart= policy brings the gateway back before the scope has ended, so the recovery sweep sees a live scope and re-attaches, and the report cannot separate 'run outlived supervisor' from 'supervisor came back in time'.",
+      "countermeasure": "TS5 captures journal timestamps of kill, restart, plugin load and sweep; the probe is run twice, once with the unit's restart delayed (RestartSec raised in a drop-in) so the ceiling and watchdog are observed in isolation."
+    },
+    {
+      "id": "O14",
+      "criterion": "SC2",
+      "obstacle": "Installing the dev gateway pulls the operator's provider credentials or channel config into the gateway's own environment, and the spike plugin inherits them into the executor environment by accident.",
+      "countermeasure": "The gateway is onboarded with channels skipped and no provider keys beyond what the runner itself needs; TS6 reads /proc/<pid>/environ of the runner and of one OpenCode child and the report lists every variable present."
     }
   ],
   "decision_points": [
@@ -322,14 +356,14 @@
     },
     {
       "id": "A8",
-      "claim": "No WednesdayAI gateway is configured or running on this host, so the spike cannot be a loaded plugin without new setup (D1).",
+      "claim": "No WednesdayAI gateway is configured or running on this host today, so the spike's first task installs one (D1, D10).",
       "kind": "environment",
       "probe": "command -v wednesdayai openclaw; ls ~/.openclaw/openclaw.json; systemctl --user list-units | grep -i openclaw",
       "status": "confirmed 2026-09-05: no wednesdayai/openclaw binary on PATH, no ~/.openclaw/openclaw.json, no gateway user unit"
     },
     {
       "id": "A9",
-      "claim": "OpenClawPluginApi exposes registerService({ id, start(ctx), stop(ctx) }) so a Phase 1 supervisor can be a plugin service; the spike prototype's lifecycle maps onto it.",
+      "claim": "OpenClawPluginApi exposes registerService({ id, start(ctx), stop(ctx) }) and registerGatewayMethod(method, handler) so the spike supervisor can be a plugin service driven by admin-scoped RPCs; the Phase 1 supervisor maps onto the same seams.",
       "kind": "contract",
       "probe": "read /data/Code/WednesdayAI-core/src/plugins/types.ts lines 453-464 and src/plugins/services.ts lines 34-75",
       "status": "confirmed by source read on 2026-09-03"
@@ -340,6 +374,27 @@
       "kind": "environment",
       "probe": "command -v flock timeout git python3",
       "status": "confirmed: /usr/bin/flock, /usr/bin/timeout, /usr/bin/git, /home/linuxbrew/.linuxbrew/bin/python3"
+    },
+    {
+      "id": "A11",
+      "claim": "The local core checkout builds and packs to an installable tarball whose version is 0.4.11 and whose plugin-sdk this repo compiles against.",
+      "kind": "environment",
+      "probe": "pnpm --version; ls node_modules/.bin/tsdown in /data/Code/WednesdayAI-core; package.json version",
+      "status": "confirmed 2026-09-05: pnpm 10.23.0; node_modules/.bin/tsdown present in /data/Code/WednesdayAI-core; package.json version 0.4.11 (npm latest is 0.4.10)"
+    },
+    {
+      "id": "A12",
+      "claim": "The daemon installed by onboard --install-daemon is a systemd user unit named openclaw-gateway with a Restart= policy, and port 18789 is free on this host.",
+      "kind": "environment",
+      "probe": "grep Restart= in core src/daemon; ss -ltn | grep 18789",
+      "status": "confirmed 2026-09-05: core src/daemon fixtures show Restart=always, RestartSec=5 for the systemd gateway unit; port 18789 free (ss -ltn); ~/.openclaw exists with only telegram/"
+    },
+    {
+      "id": "A13",
+      "claim": "The CLI can invoke an arbitrary gateway RPC (`wednesdayai gateway call <method> --params <json>`), so the spike's admin-scoped shohinSpike.* methods can be driven from the operator's shell without a UI.",
+      "kind": "contract",
+      "probe": "grep 'gateway call' in core src/cli/gateway-cli/register.ts",
+      "status": "confirmed 2026-09-05: src/cli/gateway-cli/register.ts:101 documents 'openclaw gateway call health'"
     }
   ],
   "questions": [],
