@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "workstream": "shohin-phase-0-spike",
+  "decisions": [
+    {
+      "id": "D1",
+      "title": "Where the supervisor prototype runs",
+      "options": [
+        {
+          "label": "Standalone Node script under plugins/shohin/spike/, run with node",
+          "consequence": "Answers all seven exit questions with no gateway; the registerService lifecycle stays a contract assumption verified by reading the SDK types.",
+          "chosen": true
+        },
+        {
+          "label": "Real plugin loaded by a scratch WednesdayAI gateway on this host",
+          "consequence": "Also proves plugin loading, at the cost of installing and configuring a gateway that does not exist here today and of coupling the spike to gateway auth and config.",
+          "chosen": false
+        },
+        {
+          "label": "Bash-only harness",
+          "consequence": "Fast, but the file tailing, heartbeat and identity checks Phase 1 needs are Node concerns; nothing learned would transfer.",
+          "chosen": false
+        }
+      ],
+      "rationale": "No gateway is configured on this host (A8). The questions are about the scope, HOME, runner and files. A Node prototype transfers directly into src/factory/supervisor."
+    },
+    {
+      "id": "D2",
+      "title": "Containment mechanism",
+      "options": [
+        {
+          "label": "systemd-run --user --scope with RuntimeMaxSec",
+          "consequence": "One cgroup holds every descendant including setsid children; systemctl kill stops all of them; a runtime ceiling is enforced by the OS.",
+          "chosen": true
+        },
+        {
+          "label": "Detached process group",
+          "consequence": "A child that calls setsid escapes; nothing enforces a ceiling when the supervisor dies.",
+          "chosen": false
+        },
+        {
+          "label": "Container per run",
+          "consequence": "Strongest, but core's sandbox is optional Docker and this is Phase 8 scope.",
+          "chosen": false
+        }
+      ],
+      "rationale": "The user session is running and a scope launch succeeded on this host (A1)."
+    },
+    {
+      "id": "D3",
+      "title": "Target topic for the runner",
+      "options": [
+        {
+          "label": "Separate throwaway topic shohin-spike-target prepared by hand through the WAI flow",
+          "consequence": "The runner's preflights run for real; the topic is deleted at close.",
+          "chosen": true
+        },
+        {
+          "label": "Run the spike against its own decomposed plan",
+          "consequence": "Circular: the runner would be executing the tasks that build the harness that runs it.",
+          "chosen": false
+        },
+        {
+          "label": "WAI_DAG_TEST_MODE fixture",
+          "consequence": "Skips freshness and plan lint, which are among the preconditions the spike must inventory.",
+          "chosen": false
+        }
+      ],
+      "rationale": "Only a real topic exercises the precheck token, lint and branch requirements SC6 must list."
+    },
+    {
+      "id": "D4",
+      "title": "How the ephemeral HOME is built",
+      "options": [
+        {
+          "label": "Empty allow-list grown by observed OpenCode failures",
+          "consequence": "Yields the minimal file set with evidence per file; slower by a few iterations.",
+          "chosen": true
+        },
+        {
+          "label": "Mirror the operator's HOME read-only",
+          "consequence": "Works immediately but exposes every credential and proves nothing about minimality.",
+          "chosen": false
+        }
+      ],
+      "rationale": "SC2 requires the list of files and the error seen without each; only the grown list produces that."
+    },
+    {
+      "id": "D5",
+      "title": "Which runner copy to run",
+      "options": [
+        {
+          "label": "Installed copy under ~/.agents/wai/scripts (sha256 4542740276d8...)",
+          "consequence": "Matches what a plugin on this host would find; the drift from the repo source becomes a recorded finding.",
+          "chosen": true
+        },
+        {
+          "label": "Repo source under /data/Code/agent-plugins (sha256 3fe1c1c05c58...)",
+          "consequence": "Reviewed code, but not what is deployed; would hide the drift.",
+          "chosen": false
+        }
+      ],
+      "rationale": "Phase 1 pins by sha256 whatever is installed; the spike must measure that copy."
+    },
+    {
+      "id": "D6",
+      "title": "Spend and time caps for the spike",
+      "options": [
+        {
+          "label": "USD 50 per spike day, 30 minutes per attempt, one attempt for the baseline",
+          "consequence": "Cost attributable per rung; a runaway is bounded by the scope ceiling.",
+          "chosen": true
+        },
+        {
+          "label": "No cap",
+          "consequence": "A stuck ladder could burn the day's budget with nothing learned.",
+          "chosen": false
+        },
+        {
+          "label": "USD 10",
+          "consequence": "Likely too little for baseline plus attach plus attention runs on the frontier rungs.",
+          "chosen": false
+        }
+      ],
+      "rationale": "The constraint names the operator's cap without a value; USD 50 is the recorded default and the operator may override before the run."
+    },
+    {
+      "id": "D7",
+      "title": "Stand-in for gateway death",
+      "options": [
+        {
+          "label": "SIGKILL the supervisor script mid-run",
+          "consequence": "Reproduces the observable a registerService timer would see: heartbeat stops, tailers vanish, scope lives on; does not test gateway restart ordering.",
+          "chosen": true
+        },
+        {
+          "label": "Kill a real gateway",
+          "consequence": "Requires D1's rejected option.",
+          "chosen": false
+        }
+      ],
+      "rationale": "Same failure surface for the executor at a fraction of the setup."
+    },
+    {
+      "id": "D8",
+      "title": "How the worker ladder is passed",
+      "options": [
+        {
+          "label": "Model ids in WAI_DAG_WORKER_MODELS, unpatched runner",
+          "consequence": "Uses the runner's existing -m path; if a provider is not reachable that way the report says so.",
+          "chosen": true
+        },
+        {
+          "label": "Patch the spike's runner copy to pass --agent first",
+          "consequence": "Tests a change agent-plugins has not accepted before the unpatched behaviour is known.",
+          "chosen": false
+        }
+      ],
+      "rationale": "Measure the shipped path first; patch only on evidence."
+    },
+    {
+      "id": "D9",
+      "title": "Cleanup of throwaway artifacts",
+      "options": [
+        {
+          "label": "Delete the spike directory, the target topic's plan directory and its branch in a final irreversible task gated by operator approval",
+          "consequence": "SC8 holds; nothing from the spike survives; the deletion needs a human token.",
+          "chosen": true
+        }
+      ],
+      "single_option_reason": "SC8 admits no other outcome; the only fork is who approves the deletion, and irreversible tasks always require the operator."
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "O1",
+      "criterion": "SC1",
+      "obstacle": "The user session's cgroup delegation does not cover the runner's children, so systemctl kill misses grandchildren.",
+      "countermeasure": "TS1 spawns a deliberate setsid child and lists survivors; if any survive, the report records the fallback (process group plus watchdog) and the residual risk for Phase 1."
+    },
+    {
+      "id": "O2",
+      "criterion": "SC2",
+      "obstacle": "OpenCode reads auth from a location outside HOME (XDG dirs, keyring) so no copy-in list ever suffices.",
+      "countermeasure": "Grow env.allow with XDG_CONFIG_HOME and XDG_DATA_HOME pointed at the ephemeral HOME; record every variable required alongside every file."
+    },
+    {
+      "id": "O3",
+      "criterion": "SC3a",
+      "obstacle": "The runner's -m path cannot express the operator's sub-agent (system prompt, tools) so the model id reaches the provider but not the agent behaviour.",
+      "countermeasure": "Report states this plainly; D8's second option is exercised on the runner copy and its diff recorded as a proposal for agent-plugins."
+    },
+    {
+      "id": "O4",
+      "criterion": "SC3b",
+      "obstacle": "opencode serve attach fails or the runner's probe declares cold dispatch.",
+      "countermeasure": "SC3b accepts a recorded failure with cause; the probe captures the runner's warning line."
+    },
+    {
+      "id": "O5",
+      "criterion": "SC4",
+      "obstacle": "The runner never raises attention on the chosen task, so the notify path is untested.",
+      "countermeasure": "TS4 uses a task whose scope test cannot pass; if attention still does not fire, a deterministic gate failure is forced by editing the task's expected output in the worktree."
+    },
+    {
+      "id": "O6",
+      "criterion": "SC5",
+      "obstacle": "The watchdog and RuntimeMaxSec both stop the run, so the report cannot say which mechanism acted.",
+      "countermeasure": "Run the probe twice: once with the ceiling far above the watchdog threshold, once with the watchdog disabled."
+    },
+    {
+      "id": "O7",
+      "criterion": "SC6",
+      "obstacle": "The runner invokes binaries via PATH lookups the log does not show, so the inventory is incomplete.",
+      "countermeasure": "TS6 uses strace -f -e execve for one run, or a PATH shim directory that logs every execution, and reconciles with the log."
+    },
+    {
+      "id": "O8",
+      "criterion": "SC7",
+      "obstacle": "A read-only TMPDIR makes the runner fail before the lane step, so fallback behaviour is never reached.",
+      "countermeasure": "Point TMPDIR at a writable directory and make only the worktree target path unwritable; if the runner has no such split, patch the copy to inject the failure at the lane step and record the patch."
+    },
+    {
+      "id": "O9",
+      "criterion": "SC8",
+      "obstacle": "The report references files that will be deleted, so it becomes unreadable after cleanup.",
+      "countermeasure": "The report embeds evidence inline and names deleted paths as historical; TS8 runs after the report commit."
+    },
+    {
+      "id": "O10",
+      "criterion": "SC6",
+      "obstacle": "Pre-mortem: the spike burned the budget on the frontier rungs before the cheap rung was measured, and the report has cost numbers for one rung only.",
+      "countermeasure": "Baseline runs with WAI_DAG_MAX_ATTEMPTS=1 so only the first rung executes; higher rungs are measured in a second, separately budgeted run."
+    },
+    {
+      "id": "O11",
+      "criterion": "SC2",
+      "obstacle": "Pre-mortem: the ephemeral HOME worked in the spike because the operator's OpenCode session had a cached token the copy-in carried, and Phase 1 will fail on a fresh host.",
+      "countermeasure": "The report names each copied file's role (config versus credential versus cache) and flags cache files as non-transferable."
+    },
+    {
+      "id": "O12",
+      "criterion": "SC5",
+      "obstacle": "Pre-mortem: --reset full destroyed commits the report needed, and the recovery policy was written from memory.",
+      "countermeasure": "TS5 captures git rev-list --all and the plan directory listing before every reset, and the worktree is cloned to a scratch path first."
+    }
+  ],
+  "decision_points": [
+    {
+      "id": "DP1",
+      "trigger": "The OpenCode harness or the model provider behind a ladder rung is unavailable or rejects the request for the whole attempt window, so a probe task cannot obtain an executor.",
+      "halt_codes": [
+        "ladder_exhausted",
+        "panel_unavailable",
+        "implementer_stopped"
+      ]
+    },
+    {
+      "id": "DP2",
+      "trigger": "The cleanup task (D9) is reached: it deletes the spike directory, the target topic's plan directory and branch, and must not run without the operator's approval token.",
+      "halt_codes": [
+        "human_gate_required"
+      ]
+    },
+    {
+      "id": "DP3",
+      "trigger": "The spec is amended during the run (for example a probe order change) so the precheck token no longer matches.",
+      "halt_codes": [
+        "spec_stale"
+      ]
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "claim": "A systemd user session is running on this host and `systemd-run --user --scope` can launch a process with RuntimeMaxSec.",
+      "kind": "gate",
+      "probe": "systemctl --user is-system-running; systemd-run --user --scope --quiet --property=RuntimeMaxSec=5 -- /bin/true",
+      "status": "confirmed: is-system-running=running; scope launch OK (2026-09-05)"
+    },
+    {
+      "id": "A2",
+      "claim": "OpenCode is installed and on PATH for the operator user.",
+      "kind": "environment",
+      "probe": "command -v opencode; opencode --version",
+      "status": "confirmed: /home/david/.opencode/bin/opencode, 1.18.29"
+    },
+    {
+      "id": "A3",
+      "claim": "The installed runner copy differs from the repo source, so the spike must record the sha256 of what it ran.",
+      "kind": "environment",
+      "probe": "sha256sum ~/.agents/wai/scripts/wai-dag-run.sh /data/Code/agent-plugins/plugins/wai/scripts/wai-dag-run.sh",
+      "status": "confirmed: 4542740276d8... (installed) vs 3fe1c1c05c58... (repo)"
+    },
+    {
+      "id": "A4",
+      "claim": "The three ladder sub-agents resolve to concrete model ids usable with opencode run -m.",
+      "kind": "environment",
+      "probe": "grep '^model:' ~/.config/opencode/agents/subagent-{glm-flash,gpt-terra,gpt-sol}.md",
+      "status": "confirmed: zai-coding-plan/glm-5.3-flash, openai/gpt-5.6-terra, openai/gpt-5.6-sol"
+    },
+    {
+      "id": "A5",
+      "claim": "The runner honours WAI_DAG_OPENCODE, WAI_DAG_WORKER_MODELS (ordered ladder), WAI_DAG_NOTIFY_CMD (called with topic, id, 'kind: reason'), WAI_DAG_OPENCODE_SERVER (--attach), and refuses to run without a committed precheck token and lint-clean plan unless WAI_DAG_TEST_MODE=1.",
+      "kind": "contract",
+      "probe": "grep of the installed wai-dag-run.sh and wai-dag-executors.sh for each variable",
+      "status": "confirmed by source read on 2026-09-03 (wai-dag-run.sh lines 31, 68, 128-129, 562-576, 654, 1692-1693; wai-dag-executors.sh lines 26, 43-60, 109-146)"
+    },
+    {
+      "id": "A6",
+      "claim": "wai-precheck.sh refuses a spec whose status is draft, so the design must be promoted with status active before decompose.",
+      "kind": "gate",
+      "probe": "bash wai-precheck.sh shohin-phase-0-spike against the draft",
+      "status": "confirmed 2026-09-05: 'PRECHECK FAIL: spec ... is status draft (need active|shipped)'; no .precheck.passed written"
+    },
+    {
+      "id": "A7",
+      "claim": "wai-submit-spec.sh rejects a malformed envelope with a coded reason and writes nothing to the target path.",
+      "kind": "gate",
+      "probe": "submit an envelope whose success criterion id is 'bad-id' with path under /tmp; check exit code and that the target does not exist",
+      "status": "confirmed 2026-09-05: rejected with 'malformed_envelope: path' and 'return-to: spec'; target path not created"
+    },
+    {
+      "id": "A8",
+      "claim": "No WednesdayAI gateway is configured or running on this host, so the spike cannot be a loaded plugin without new setup (D1).",
+      "kind": "environment",
+      "probe": "command -v wednesdayai openclaw; ls ~/.openclaw/openclaw.json; systemctl --user list-units | grep -i openclaw",
+      "status": "confirmed 2026-09-05: no wednesdayai/openclaw binary on PATH, no ~/.openclaw/openclaw.json, no gateway user unit"
+    },
+    {
+      "id": "A9",
+      "claim": "OpenClawPluginApi exposes registerService({ id, start(ctx), stop(ctx) }) so a Phase 1 supervisor can be a plugin service; the spike prototype's lifecycle maps onto it.",
+      "kind": "contract",
+      "probe": "read /data/Code/WednesdayAI-core/src/plugins/types.ts lines 453-464 and src/plugins/services.ts lines 34-75",
+      "status": "confirmed by source read on 2026-09-03"
+    },
+    {
+      "id": "A10",
+      "claim": "flock, GNU timeout, git and python3 are on PATH, as the runner requires.",
+      "kind": "environment",
+      "probe": "command -v flock timeout git python3",
+      "status": "confirmed: /usr/bin/flock, /usr/bin/timeout, /usr/bin/git, /home/linuxbrew/.linuxbrew/bin/python3"
+    }
+  ],
+  "questions": [],
+  "no_decision_points_reason": ""
+}
