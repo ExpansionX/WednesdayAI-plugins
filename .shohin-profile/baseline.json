@@ -1,0 +1,9 @@
+{
+  "expectedOutcome": "verified_success",
+  "expectedTasks": [
+    "T001",
+    "T002"
+  ],
+  "profileId": "shohin-r5-no-provider-20260913t20244",
+  "topic": "shohin-r5-prof-success-20260913t20244"
+}
