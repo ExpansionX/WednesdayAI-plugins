@@ -1,5 +1,13 @@
 # Decisions Ledger
 
+## Task 008 entrypoint verification — 2026-09-13
+- Worker commit `b40c8a565ed9e57d6c42863291d274b3ed427f6f` passed the fully qualified index Vitest suite (6 tests), full nested suite (50 tests), typecheck, build, and WAI task008 gate. Jiti source-load returned plugin id `shohin-spike` with default-only export; dist contained runtime artifacts and no test files. Committed whitespace check passed.
+- Fixture checks cover synchronous one-service/three-method registration, closed config/RPC params, lifecycle readiness, probe flags, status/cancel, and prompt run-handle return. Live installation and admin authorization remain task009; no paid model calls occurred. Root oxlint/oxfmt are unavailable. Full worker evidence: Zenith mission-001 work-008 attempt.
+
+## Model definition recheck — 2026-09-13
+- User requested a fresh check. Independent inspection found `~/.config/opencode/agents/subagent-glm-flash.md` model `zai/glm-5.3-flash` variant `xhigh`; `subagent-gpt-terra.md` model `openai/gpt-5.6-terra` variant `high`; `subagent-gpt-sol.md` model `openai/gpt-5.6-sol` variant `high`. Model/variant are at lines 4/5 in each regular file. Earlier missing-definition reports are historical.
+- WAI direct `-m` dispatch does not select those subagent definitions or variants. Installed OpenCode supports explicit `--variant` but rejects subagent-mode definitions as primary `--agent` runs. Native output/steps controls do not establish a hard total spending bound; paid dispatch remains disabled pending independently enforced request/spend limits. Full provenance: Zenith decisions007/008. No model calls or config changes were made during this recheck.
+
 ## Task 007 supervisor verification — 2026-09-13
 - Worker commit `48396dd4cbf62bb31ad939dbcd5cb02fbd22ab45` passed scoped supervisor Vitest (5 tests), typecheck, full nested suite (44 tests), build, and WAI task007 gate. Root lint remains unavailable because oxlint is missing.
 - The actual installed WAI bundle was copied and patched in a no-dispatch check: `budget_oracle_missing`, persisted `budget_refused`, run directory mode 700, immutable generation/hash evidence present, `launchCount=0`, and credential-value scan false. No paid call occurred.
