@@ -1,5 +1,10 @@
 # Decisions Ledger
 
+## Task 007 supervisor verification — 2026-09-13
+- Worker commit `48396dd4cbf62bb31ad939dbcd5cb02fbd22ab45` passed scoped supervisor Vitest (5 tests), typecheck, full nested suite (44 tests), build, and WAI task007 gate. Root lint remains unavailable because oxlint is missing.
+- The actual installed WAI bundle was copied and patched in a no-dispatch check: `budget_oracle_missing`, persisted `budget_refused`, run directory mode 700, immutable generation/hash evidence present, `launchCount=0`, and credential-value scan false. No paid call occurred.
+- Fixtures cover durable records, explicit environments, reservation/reconciliation, restart/concurrent/cap-edge budget refusals, recovery ordering, and idempotent cancel. Real paid dispatch still requires actual model mappings, pricing sources, and enforceable token ceilings; fixture oracles do not authorize it. Full evidence: Zenith mission-001 work-007 attempt. Independent harness validation remains pending.
+
 ## Task 006 independent completion evidence — 2026-09-13
 - Worker commit `29e2e383333b55628643bcd35072c1d5931d0488` passed scoped evidence Vitest (9 tests), typecheck, full nested suite (39 tests), build, and WAI task006 gate. Root lint was attempted but oxlint is unavailable.
 - Required invariant: the forged-hint test passes only because the verifier outcome remains failure (`runner_nonzero` and `missing_task_commit`) and invokes no fake gate. Executor artifacts retain non-authoritative provenance. Success requires committed baseline task coverage, ancestry, manifest equality, runner exit zero, and independent exact-SHA gate results.
