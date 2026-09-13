@@ -1,0 +1,9 @@
+{
+  "expectedOutcome": "missing_task_commit",
+  "expectedTasks": [
+    "T001",
+    "T002"
+  ],
+  "profileId": "shohin-r5-no-provider-20260913t20244",
+  "topic": "shohin-r5-prof-missing-20260913t20244"
+}
