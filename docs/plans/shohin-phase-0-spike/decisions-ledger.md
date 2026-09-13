@@ -1,5 +1,10 @@
 # Decisions Ledger
 
+## Task 004 evidence scripts — 2026-09-13
+- At commit `bb162c5d6af18366f534c35f81abded1b987f12f`, the worker reports the scoped evidence-script Vitest suite (4 tests), typecheck, full nested suite (21 tests), and WAI task004 gate passed. `stat -c '%a %n' plugins/shohin/spike/scripts/*` reported 755 for all four scripts.
+- CLI fixtures exercised concurrent notify/report appends, escaping, wrapper stdout/stderr/status preservation and usage metadata, argv redaction, and deterministic no-stdin assessor schema. Installed WAI notify and assessor interfaces were inspected. No paid model call occurred.
+- Root `pnpm lint` failed because oxlint is unavailable; no lint pass is claimed. Evidence and limitations are recorded in Zenith mission-001's work-004 attempt report; independent harness validation is pending.
+
 ## Task 003 environment builder — 2026-09-13
 - Worker commit `6b2ab812c982d563548a7a5da65927d8e13765fd` adds the four declared files. The worker reports scoped Vitest (12 tests), nested typecheck, and the WAI task003 gate passed at that exact commit. Independent harness validation remains pending.
 - Explicit deny assertions cover absolute and parent-traversing HOME entries, symlinks, special files/directories, invalid topics, noncanonical or different-repository worktrees, credential-bearing executor/control inputs, executor bus variables, invalid runtime/bus addresses, and implicit process environment leakage. Positive cases cover contained mode-0700 HOME copies, same-common-directory worktrees, and distinct executor/control environment objects.
