@@ -351,6 +351,89 @@ describe("Shohin systemd scope controller", () => {
     expect(clock.sleeps).toEqual([10, 10]);
   });
 
+  it("uses verified systemctl unit kill when the control pid has exited", async () => {
+    const { clock, command, controller, filesystem, process } = makeFixture();
+    filesystem.files.delete("/proc/4242/stat");
+    command.execOutputs = [
+      {
+        status: 0,
+        stdout:
+          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=77\nControlGroup=/user.slice/app.scope\nSubState=running\nLoadState=loaded\n",
+        stderr: "",
+      },
+      { status: 0, stdout: "", stderr: "" },
+      {
+        status: 0,
+        stdout:
+          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=77\nControlGroup=/user.slice/app.scope\nSubState=running\nLoadState=loaded\n",
+        stderr: "",
+      },
+      {
+        status: 0,
+        stdout:
+          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=0\nSubState=dead\nLoadState=not-found\n",
+        stderr: "",
+      },
+    ];
+
+    await expect(
+      controller.cancel(
+        {
+          controlEnv: baseLaunchOptions().controlEnv,
+          controlPid: 4242,
+          controlStartTime: "998877",
+          scopeId: "shohin-shohin-phase-0-spike-run005.scope",
+        },
+        { killAfterMs: 20, pollIntervalMs: 10 },
+      ),
+    ).resolves.toEqual({ sentKill: false, sentTerm: true });
+
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      [
+        "--user",
+        "show",
+        "shohin-shohin-phase-0-spike-run005.scope",
+        "--property=Id",
+        "--property=MainPID",
+        "--property=ControlGroup",
+        "--property=SubState",
+        "--property=LoadState",
+        "--no-pager",
+      ],
+      [
+        "--user",
+        "kill",
+        "--kill-whom=all",
+        "--signal=SIGTERM",
+        "shohin-shohin-phase-0-spike-run005.scope",
+      ],
+      [
+        "--user",
+        "show",
+        "shohin-shohin-phase-0-spike-run005.scope",
+        "--property=Id",
+        "--property=MainPID",
+        "--property=ControlGroup",
+        "--property=SubState",
+        "--property=LoadState",
+        "--no-pager",
+      ],
+      [
+        "--user",
+        "show",
+        "shohin-shohin-phase-0-spike-run005.scope",
+        "--property=Id",
+        "--property=MainPID",
+        "--property=ControlGroup",
+        "--property=SubState",
+        "--property=LoadState",
+        "--no-pager",
+      ],
+    ]);
+    expect(process.signals).toEqual([]);
+    expect(clock.sleeps).toEqual([10]);
+  });
+
   it("rejects Id mismatch or reused PID start time before signaling", async () => {
     const mismatch = makeFixture();
     mismatch.command.execOutputs = [

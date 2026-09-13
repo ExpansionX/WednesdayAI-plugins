@@ -53,7 +53,11 @@ class FakeClock implements SpikeSupervisorClock {
 class FakeScopeController implements ScopeController {
   public readonly launches: ScopeLaunchOptions[] = [];
   public readonly cancels: ScopeCancelHandle[] = [];
-  public readonly inspections: string[] = [];
+  public readonly inspections: Array<{
+    readonly controlEnv: Readonly<Record<string, string>>;
+    readonly scopeId: string;
+  }> = [];
+  public expectedControlEnv: Readonly<Record<string, string>> | undefined;
   public identity: ScopeIdentity = {
     controlGroup: "/user.slice/app.slice/shohin.scope",
     id: "shohin-shohin-phase-0-spike-run007.scope",
@@ -63,6 +67,7 @@ class FakeScopeController implements ScopeController {
   public cancelResult: ScopeCancelResult = { sentKill: false, sentTerm: true };
 
   public async launch(options: ScopeLaunchOptions): Promise<ScopedRunHandle> {
+    this.assertExpectedControlEnv(options.controlEnv);
     this.launches.push(cloneLaunchOptions(options));
     return {
       argv: ["systemd-run", "--user", "--scope"],
@@ -77,15 +82,24 @@ class FakeScopeController implements ScopeController {
 
   public async inspect(
     scopeId: string,
-    _controlEnv: Readonly<Record<string, string>>,
+    controlEnv: Readonly<Record<string, string>>,
   ): Promise<ScopeIdentity> {
-    this.inspections.push(scopeId);
+    this.assertExpectedControlEnv(controlEnv);
+    this.inspections.push({ controlEnv: { ...controlEnv }, scopeId });
     return { ...this.identity, id: scopeId };
   }
 
   public async cancel(handle: ScopeCancelHandle): Promise<ScopeCancelResult> {
+    this.assertExpectedControlEnv(handle.controlEnv);
     this.cancels.push({ ...handle, controlEnv: { ...handle.controlEnv } });
     return this.cancelResult;
+  }
+
+  private assertExpectedControlEnv(env: Readonly<Record<string, string>>): void {
+    if (this.expectedControlEnv === undefined) {
+      return;
+    }
+    expect(env).toEqual(this.expectedControlEnv);
   }
 }
 
@@ -239,6 +253,12 @@ const makeSupervisor = (root: string) => {
     registeredRepoRoot: repoRoot,
     targetRepoRoot: targetRoot,
     topic: "shohin-phase-0-spike",
+  };
+
+  scope.expectedControlEnv = {
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+    PATH: "/usr/bin:/bin",
+    XDG_RUNTIME_DIR: "/run/user/1000",
   };
 
   const dependencies: SpikeSupervisorDependencies = {
@@ -409,6 +429,11 @@ describe("SpikeSupervisor", () => {
       "shohin-observability",
       "fixture-probe",
     ]);
+    expect(record.controlEnv).toEqual({
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+      PATH: "/usr/bin:/bin",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+    });
     expect(record.runtimeAllowList).toEqual({ env: ["PATH"], home: [] });
     expect(record.scope).toMatchObject({
       controlPid: 4242,
@@ -595,7 +620,7 @@ describe("SpikeSupervisor", () => {
       truthStarted = resolve;
     });
     const fixture = makeSupervisor(root);
-    const supervisor = new SpikeSupervisor({
+    const dependencies: SpikeSupervisorDependencies = {
       ...fixture.dependencies,
       truth: {
         verifyExitedRun: async (record) => {
@@ -611,7 +636,8 @@ describe("SpikeSupervisor", () => {
           };
         },
       },
-    });
+    };
+    const supervisor = new SpikeSupervisor(dependencies);
     await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
     await supervisor.recordRunnerExit("run007", 0);
     await supervisor.start(
@@ -632,7 +658,8 @@ describe("SpikeSupervisor", () => {
 
     const before = scopeHeartbeat(path.join(root, "run-data"), "run009");
     fixture.clock.current = "2026-09-13T12:01:00.000Z";
-    const result = await supervisor.recover({ runRoot: path.join(root, "run-data") });
+    const restartedSupervisor = new SpikeSupervisor(dependencies);
+    const result = await restartedSupervisor.recover({ runRoot: path.join(root, "run-data") });
 
     expect(result.refreshedActiveRunIds).toEqual(["run009"]);
     expect(scopeHeartbeat(path.join(root, "run-data"), "run009")).not.toBe(before);
@@ -640,27 +667,61 @@ describe("SpikeSupervisor", () => {
     await truthStartedPromise;
     expect(truthCalls).toEqual(["run007"]);
     expect(fixture.identity.verifyActiveCalls).toBe(1);
+    expect(fixture.scope.inspections.at(-1)?.controlEnv).toEqual(
+      fixture.scope.expectedControlEnv,
+    );
     expect(fixture.scope.launches).toHaveLength(3);
   });
 
   it("cancels active runs idempotently without reset or retry", async () => {
     const root = makeTempRoot("cancel");
     mkdirSync(path.join(root, "source-home"), { recursive: true });
-    const { scope, supervisor } = makeSupervisor(root);
+    const fixture = makeSupervisor(root);
+    const { scope, supervisor } = fixture;
     await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
 
-    await expect(supervisor.cancel("run007")).resolves.toEqual({
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    await expect(
+      restartedSupervisor.cancel("run007", path.join(root, "run-data")),
+    ).resolves.toEqual({
       alreadyStopped: false,
       result: { sentKill: false, sentTerm: true },
       runId: "run007",
     });
-    await expect(supervisor.cancel("run007")).resolves.toEqual({
+    await expect(
+      restartedSupervisor.cancel("run007", path.join(root, "run-data")),
+    ).resolves.toEqual({
       alreadyStopped: true,
       runId: "run007",
     });
     expect(scope.cancels).toHaveLength(1);
+    expect(scope.cancels[0].controlEnv).toEqual(scope.expectedControlEnv);
     expect(scope.launches).toHaveLength(1);
     expect(readRecord(path.join(root, "run-data")).status).toBe("canceled");
+  });
+
+  it("fails closed for legacy active records without a persisted control env", async () => {
+    const root = makeTempRoot("legacy-control");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    await fixture.supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+
+    const runRoot = path.join(root, "run-data");
+    const recordPath = path.join(runRoot, "run007", "run.json");
+    const legacyRecord = readRecord(runRoot);
+    delete (legacyRecord as { controlEnv?: unknown }).controlEnv;
+    writeFileSync(recordPath, JSON.stringify(legacyRecord, null, 2));
+
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    await expect(restartedSupervisor.recover({ runRoot })).rejects.toMatchObject({
+      code: "record_unavailable",
+    });
+    await expect(restartedSupervisor.cancel("run007", runRoot)).rejects.toMatchObject({
+      code: "record_unavailable",
+    });
+    expect(fixture.scope.inspections).toHaveLength(1);
+    expect(fixture.scope.cancels).toHaveLength(0);
+    expect(readRecord(runRoot).status).toBe("active");
   });
 });
 

@@ -238,6 +238,7 @@ export interface JournalEntry {
 }
 
 export interface SpikeSupervisorRecord {
+  readonly controlEnv: Readonly<Record<string, string>>;
   readonly createdAt: string;
   readonly heartbeat: HeartbeatRecord;
   readonly identity: RunIdentity;
@@ -334,6 +335,13 @@ const terminalStatuses = new Set<SpikeRunStatus>([
   "recovered",
   "unknown",
 ]);
+const controlEnvironmentKeys = [
+  "PATH",
+  "XDG_RUNTIME_DIR",
+  "DBUS_SESSION_BUS_ADDRESS",
+] as const;
+const allowedRecordedControlEnvironment = new Set<string>(controlEnvironmentKeys);
+
 
 const nodeClock: SpikeSupervisorClock = {
   nowIso: () => new Date().toISOString(),
@@ -580,6 +588,7 @@ export class SpikeSupervisor {
       const reservedRecord = this.readRecord(runRoot, runId);
       this.writeRecord({
         ...reservedRecord,
+        controlEnv: launch.controlEnv,
         launchEnv: launch.executorEnv,
         spendLedger,
         status: "reserved",
@@ -609,6 +618,7 @@ export class SpikeSupervisor {
       const activeRecord = this.readRecord(runRoot, runId);
       const finalRecord: SpikeSupervisorRecord = {
         ...activeRecord,
+        controlEnv: launch.controlEnv,
         heartbeat: this.refreshHeartbeat(runDir),
         launchEnv: launch.executorEnv,
         runnerGeneration,
@@ -683,8 +693,9 @@ export class SpikeSupervisor {
             `Active run ${runId} is missing scope identity`,
           );
         }
+        const controlEnv = readRecordedControlEnvironment(record);
         await this.identity.verifyActiveRunIdentity(record);
-        await this.scope.inspect(record.scope.scopeId, record.launchEnv);
+        await this.scope.inspect(record.scope.scopeId, controlEnv);
         const updated = {
           ...record,
           heartbeat: this.refreshHeartbeat(record.runDir),
@@ -729,8 +740,9 @@ export class SpikeSupervisor {
     if (record.status !== "active" || record.scope === undefined) {
       return { alreadyStopped: true, runId };
     }
+    const controlEnv = readRecordedControlEnvironment(record);
     const handle: ScopeCancelHandle = {
-      controlEnv: record.launchEnv,
+      controlEnv,
       controlPid: record.scope.controlPid,
       controlStartTime: record.scope.controlStartTime,
       scopeId: record.scope.scopeId,
@@ -797,6 +809,7 @@ export class SpikeSupervisor {
   }): SpikeSupervisorRecord {
     const at = this.clock.nowIso();
     return {
+      controlEnv: {},
       createdAt: at,
       heartbeat,
       identity,
@@ -1201,6 +1214,40 @@ const validateBundleComplete = (generationDir: string): void => {
     }
   }
 };
+
+const readRecordedControlEnvironment = (record: SpikeSupervisorRecord): BuiltEnvironment => {
+  if (!isStringRecord(record.controlEnv) || Object.keys(record.controlEnv).length === 0) {
+    throw new SpikeSupervisorError(
+      "record_unavailable",
+      `Active run ${record.runId} is missing persisted control environment`,
+    );
+  }
+  const unexpectedKey = Object.keys(record.controlEnv).find(
+    (key) => !allowedRecordedControlEnvironment.has(key),
+  );
+  if (unexpectedKey !== undefined) {
+    throw new SpikeSupervisorError(
+      "record_unavailable",
+      `Active run ${record.runId} has invalid persisted control environment`,
+      { key: unexpectedKey },
+    );
+  }
+  try {
+    return buildControlEnvironment({ sourceEnv: record.controlEnv });
+  } catch (error) {
+    throw new SpikeSupervisorError(
+      "record_unavailable",
+      `Active run ${record.runId} has invalid persisted control environment`,
+      { reason: error instanceof Error ? error.message : String(error) },
+    );
+  }
+};
+
+const isStringRecord = (value: unknown): value is Readonly<Record<string, string>> =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every((entry) => typeof entry === "string");
 
 const appendJournal = (
   record: SpikeSupervisorRecord,

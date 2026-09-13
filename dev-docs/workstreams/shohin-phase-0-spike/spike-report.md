@@ -468,6 +468,148 @@ $ git hash-object docs/superpowers/specs/2026-09-05-shohin-phase-0-spike.md
 ca609fff5cf477a0fb59b07886843e1bf9b57f6f
 ~~~
 
+### Harness repair R2 control-environment and live install evidence
+
+UTC repair window: 2026-09-13T15:13:19Z through 2026-09-13T15:36:23Z. External repair evidence root: `/home/david/.zenith/projects/20260913T063314Z-resume-shohin-phase-0-spike-from-existing-docs-superpowers-specs/.zenith/missions/mission-001/evidence/harness/repair-r2`.
+
+Repair summary: `repair-summary.json`. The supervisor now persists a distinct validated `controlEnv` in `run.json` while keeping `launchEnv` as executor launch provenance only. Active recovery and cancel read the persisted control env, revalidate it against the explicit control-environment contract, and fail closed with `record_unavailable` for legacy active records missing a valid control environment. A narrow scope-controller fallback also handles the real `systemd-run --scope` case where the transient launcher PID has exited before cancellation: after revalidating the full `.scope` Id through `systemctl show`, it sends TERM/KILL through `systemctl kill --kill-whom=all` rather than signaling a possibly stale PID.
+
+Red/green regression proof:
+
+```text
+$ npm --prefix plugins/shohin/spike exec -- vitest run plugins/shohin/spike/src/supervisor.test.ts
+(exit 1 before production fix) strict control-env tests failed: active recovery/cancel received executor env with HOME/TMPDIR/WAI_* instead of PATH/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS.
+
+$ npm --prefix plugins/shohin/spike exec -- vitest run plugins/shohin/spike/src/supervisor.test.ts
+(exit 0 after repair) Test Files 1 passed; Tests 6 passed.
+```
+
+Nested checks after the final repair:
+
+```text
+$ npm --prefix plugins/shohin/spike run typecheck
+(exit 0) tsc --noEmit
+
+$ npm --prefix plugins/shohin/spike run build
+(exit 0) tsc -p tsconfig.build.json
+
+$ npm --prefix plugins/shohin/spike exec -- vitest run plugins/shohin/spike/src/scope.test.ts plugins/shohin/spike/src/supervisor.test.ts
+(exit 0) Test Files 2 passed; Tests 16 passed
+
+$ npm --prefix plugins/shohin/spike test
+(exit 0) Test Files 7 passed; Tests 52 passed
+
+$ git diff --check
+(exit 0)
+```
+
+Saved task gates were run for the closest touched surfaces, but this targetless repair modifies already-created files and the saved task gates are still `allowed_change=create`:
+
+```text
+$ env WAI_TYPECHECK_CMD='npm --prefix plugins/shohin/spike run typecheck' WAI_TEST_CMD='npm --prefix plugins/shohin/spike exec -- vitest run {scope}' bash /home/david/.agents/wai/scripts/task-gate.sh shohin-phase-0-spike 005
+(exit 1) GATE_FAIL_CHECK=allowed_change; REJECT: create: no A (addition) recorded
+
+$ env WAI_TYPECHECK_CMD='npm --prefix plugins/shohin/spike run typecheck' WAI_TEST_CMD='npm --prefix plugins/shohin/spike exec -- vitest run {scope}' bash /home/david/.agents/wai/scripts/task-gate.sh shohin-phase-0-spike 007
+(exit 1) GATE_FAIL_CHECK=allowed_change; REJECT: create: no A (addition) recorded
+
+$ env WAI_TYPECHECK_CMD='npm --prefix plugins/shohin/spike run typecheck' WAI_TEST_CMD='npm --prefix plugins/shohin/spike exec -- vitest run {scope}' bash /home/david/.agents/wai/scripts/task-gate.sh shohin-phase-0-spike 009
+(exit 0) CONFORMS: task 009 passed all deterministic gates; GATE_FAIL_CHECK=none
+```
+
+Harmless live active-scope proof used a temporary clean Git repo and a fake WAI bundle whose `wai-dag-run.sh` only sleeps, so no provider/model calls occurred. Evidence: `real-active-scope.mjs`, `real-active-scope-summary.json`, and `post-active-scope-cleanup.json`.
+
+```text
+start status: active
+controlEnv keys: DBUS_SESSION_BUS_ADDRESS, PATH, XDG_RUNTIME_DIR
+executor env includes HOME behind env -i: true
+fresh supervisor recovery: refreshedActiveRunIds=[realactive], scheduledTruthRunIds=[]
+heartbeat refreshed: 2026-09-13T15:28:42.309Z -> 2026-09-13T15:28:42.327Z
+first cancel: alreadyStopped=false, sentTerm=true, sentKill=false
+second cancel: alreadyStopped=true
+scope wait status: 143
+post-process scope inventory: exit 0, scopeIds=[], empty=true
+```
+
+Repaired managed-copy refresh and readiness:
+
+```text
+$ realpath /home/david/.openclaw/extensions/shohin-spike
+/home/david/.openclaw/extensions/shohin-spike
+
+$ stat -c '%F %a %U:%G %n' /home/david/.openclaw/extensions/shohin-spike
+directory 700 david:david /home/david/.openclaw/extensions/shohin-spike
+
+$ wednesdayai plugins uninstall shohin-spike --dry-run
+(exit 0) Will remove: config entry, install record. Dry run, no changes made.
+
+$ wednesdayai plugins uninstall shohin-spike --force
+(exit 0) removed config entry and install record
+
+$ rm -rf /home/david/.openclaw/extensions/shohin-spike
+(exit 0; removed only the verified stale managed directory)
+
+$ wednesdayai plugins install /data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter/plugins/shohin/spike
+(exit 0) installed copied development plugin
+
+$ wednesdayai plugins enable shohin-spike
+(exit 0)
+
+$ wednesdayai config set plugins.entries.shohin-spike.config.repoRoot /data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter
+(exit 0)
+
+$ wednesdayai config validate
+(exit 0) Config valid: ~/.openclaw/openclaw.json
+
+$ env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus wednesdayai gateway restart --json
+(exit 0) {"action":"restart","ok":true,"result":"restarted"}
+```
+
+Exact source/installed generation at `source-installed-hashes.json` generated 2026-09-13T15:36:23.125Z, allMatch=true:
+
+```text
+src/supervisor.ts       9e5fa835b530c738d11d8bd9ed41af73b024d104544b638b6e8035d897f8389c
+src/supervisor.test.ts  ff5349fa76207d6805206bd165f96395afed8352c8cac193fbf4609eb56f3621
+src/scope.ts            945011bd8b151c7d2c592237c2bd7d1cd167ec247e741a4d2e5fe2d8dd5502ae
+src/scope.test.ts       14a44c4e42fd3dc40a07d1ad3245bef8f95d5210968703e7aa9146284d0b9976
+dist/src/supervisor.js  a98bd94859c232599390ebde2b67ff6a2e74ae5717f1f8a1dbbb96f8e291b49f
+dist/src/scope.js       d1a764301eb16473610427798b930c0936f49c0d134089b09d2fbe90b265bb7c
+index.ts                7dbfff23b3230b18679bc25670e5f8f7b03d97a248713e54639be5c928deeba0
+dist/index.js           f9c740bb188248e4d725c4a8c628283c29f9380c0e68310349b8595caabdc370
+openclaw.plugin.json    877a18e2816fc51cf4c8cedc22e90c787dd15dd6bc14165ff4aa1deb6bb34fba
+```
+
+Live readiness after restart:
+
+```text
+$ env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show openclaw-gateway.service --property=Id --property=ActiveState --property=SubState --property=MainPID --property=NRestarts --property=ExecMainStartTimestamp --property=UnitFileState --no-pager
+Id=openclaw-gateway.service
+ActiveState=active
+SubState=running
+UnitFileState=enabled
+MainPID=1192050
+NRestarts=0
+ExecMainStartTimestamp=Sun 2026-09-13 15:32:59 UTC
+
+$ wednesdayai gateway health --json
+(exit 0) ok=true, channels={}, sessions.count=0
+
+$ OPENCLAW_CATALOG_REMOTE=0 wednesdayai plugins info shohin-spike --json
+(exit 0) origin=global, enabled=true, status=loaded, diagnostics=[], services=[shohin-spike-supervisor], gatewayMethods=[shohinSpike.run, shohinSpike.cancel, shohinSpike.status]
+
+$ wednesdayai gateway call shohinSpike.status --params '{}' --json
+(exit 0) service.status=ready, repoRoot=/data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter, runRoot=/home/david/.openclaw/shohin-spike/run-data, refreshedActiveRunIds=[], scheduledTruthRunIds=[completed-fixture-009]
+```
+
+Raw auth-boundary check after reinstall used protocol 3 WebSocket frames without `GatewayClient` and without reading credential files. Evidence: `raw-auth-negative.json`.
+
+```text
+absent auth/device: ok=false, errorCode=NOT_PAIRED, detailCode=DEVICE_IDENTITY_REQUIRED, closeCode=1008, customMethodRequestsSentAfterDeniedHandshake=0
+invalid placeholder token/no device: ok=false, errorCode=INVALID_REQUEST, detailCode=AUTH_TOKEN_MISMATCH, authReason=token_mismatch, closeCode=1008, customMethodRequestsSentAfterDeniedHandshake=0
+```
+
+Root command limitation: `pnpm lint` exited 1 before linting because `oxlint` is not installed in this workspace. No paid model calls, provider changes, core edits, target task implementation, cleanup, auth-presence guard, raw auth config read, raw unit Environment read, credential-store read, or backup inspection occurred.
+
+
 ## Target topic
 <!-- evidence:target-topic -->
 

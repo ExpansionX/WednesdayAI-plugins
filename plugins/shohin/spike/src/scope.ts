@@ -335,6 +335,17 @@ export const readProcessStartTime = (
   pid: number,
 ): string => parseProcStatStartTime(filesystem.readTextFile(`/proc/${pid}/stat`));
 
+const readProcessStartTimeIfAvailable = (
+  filesystem: ScopeFilesystem,
+  pid: number,
+): string | undefined => {
+  try {
+    return readProcessStartTime(filesystem, pid);
+  } catch {
+    return undefined;
+  }
+};
+
 export const createScopeController = ({
   clock = nodeClock,
   command = nodeCommandAdapter,
@@ -382,14 +393,6 @@ export const createScopeController = ({
     assertScopeId(handle.scopeId);
     const controlEnv = assertControlEnvironment(handle.controlEnv);
     await inspectScope(handle.scopeId, controlEnv, command, systemctlCommand);
-    const currentStartTime = readProcessStartTime(filesystem, handle.controlPid);
-    if (currentStartTime !== handle.controlStartTime) {
-      throw new ScopeControllerError(
-        "process_identity_mismatch",
-        `Refusing to signal PID ${handle.controlPid}: start time changed`,
-      );
-    }
-
     const killAfterMs = validateIntegerRange(
       options.killAfterMs ?? defaultCancelKillAfterMs,
       "cancel killAfterMs",
@@ -403,10 +406,37 @@ export const createScopeController = ({
       killAfterMs,
     );
 
-    processAdapter.signal(handle.controlPid, "SIGTERM");
+    const currentStartTime = readProcessStartTimeIfAvailable(filesystem, handle.controlPid);
+    if (currentStartTime !== undefined) {
+      if (currentStartTime !== handle.controlStartTime) {
+        throw new ScopeControllerError(
+          "process_identity_mismatch",
+          `Refusing to signal PID ${handle.controlPid}: start time changed`,
+        );
+      }
+      processAdapter.signal(handle.controlPid, "SIGTERM");
+      let elapsedMs = 0;
+      while (elapsedMs < killAfterMs) {
+        if (!processAdapter.isRunning(handle.controlPid)) {
+          return { sentKill: false, sentTerm: true };
+        }
+        const sleepMs = Math.min(pollIntervalMs, killAfterMs - elapsedMs);
+        await clock.sleep(sleepMs);
+        elapsedMs += sleepMs;
+      }
+
+      if (processAdapter.isRunning(handle.controlPid)) {
+        processAdapter.signal(handle.controlPid, "SIGKILL");
+        return { sentKill: true, sentTerm: true };
+      }
+      return { sentKill: false, sentTerm: true };
+    }
+
+    await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, command, systemctlCommand);
     let elapsedMs = 0;
     while (elapsedMs < killAfterMs) {
-      if (!processAdapter.isRunning(handle.controlPid)) {
+      const identity = await inspectScope(handle.scopeId, controlEnv, command, systemctlCommand);
+      if (!scopeIsRunning(identity)) {
         return { sentKill: false, sentTerm: true };
       }
       const sleepMs = Math.min(pollIntervalMs, killAfterMs - elapsedMs);
@@ -414,8 +444,9 @@ export const createScopeController = ({
       elapsedMs += sleepMs;
     }
 
-    if (processAdapter.isRunning(handle.controlPid)) {
-      processAdapter.signal(handle.controlPid, "SIGKILL");
+    const finalIdentity = await inspectScope(handle.scopeId, controlEnv, command, systemctlCommand);
+    if (scopeIsRunning(finalIdentity)) {
+      await sendScopeSignal(handle.scopeId, "SIGKILL", controlEnv, command, systemctlCommand);
       return { sentKill: true, sentTerm: true };
     }
     return { sentKill: false, sentTerm: true };
@@ -540,6 +571,32 @@ const buildLaunchSpec = async (
     scopeId,
   };
 };
+
+const sendScopeSignal = async (
+  scopeId: string,
+  signal: ScopeSignal,
+  controlEnv: Readonly<Record<string, string>>,
+  command: CommandAdapter,
+  systemctlCommand: string,
+): Promise<void> => {
+  const output = await command.execFile(
+    systemctlCommand,
+    ["--user", "kill", "--kill-whom=all", `--signal=${signal}`, scopeId],
+    { env: controlEnv },
+  );
+  if (output.status !== 0) {
+    throw new ScopeControllerError(
+      "command_failed",
+      `systemctl kill failed for ${scopeId}: ${output.stderr.trim()}`,
+    );
+  }
+};
+
+const scopeIsRunning = (identity: ScopeIdentity): boolean =>
+  identity.loadState !== "not-found" &&
+  identity.subState !== "dead" &&
+  identity.subState !== "failed" &&
+  identity.subState !== "exited";
 
 const inspectScope = async (
   scopeId: string,
