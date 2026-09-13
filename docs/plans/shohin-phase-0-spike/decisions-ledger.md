@@ -1,5 +1,10 @@
 # Decisions Ledger
 
+## Task 006 independent completion evidence — 2026-09-13
+- Worker commit `29e2e383333b55628643bcd35072c1d5931d0488` passed scoped evidence Vitest (9 tests), typecheck, full nested suite (39 tests), build, and WAI task006 gate. Root lint was attempted but oxlint is unavailable.
+- Required invariant: the forged-hint test passes only because the verifier outcome remains failure (`runner_nonzero` and `missing_task_commit`) and invokes no fake gate. Executor artifacts retain non-authoritative provenance. Success requires committed baseline task coverage, ancestry, manifest equality, runner exit zero, and independent exact-SHA gate results.
+- Fixture gate logs showed matching requested SHA and verifier-worktree HEAD, restricted environment keys, and verifier cleanup. No paid calls or gateway changes occurred. Full worker evidence is in Zenith mission-001's work-006 attempt; independent harness validation remains pending.
+
 ## Task 004 evidence scripts — 2026-09-13
 - At commit `bb162c5d6af18366f534c35f81abded1b987f12f`, the worker reports the scoped evidence-script Vitest suite (4 tests), typecheck, full nested suite (21 tests), and WAI task004 gate passed. `stat -c '%a %n' plugins/shohin/spike/scripts/*` reported 755 for all four scripts.
 - CLI fixtures exercised concurrent notify/report appends, escaping, wrapper stdout/stderr/status preservation and usage metadata, argv redaction, and deterministic no-stdin assessor schema. Installed WAI notify and assessor interfaces were inspected. No paid model call occurred.
