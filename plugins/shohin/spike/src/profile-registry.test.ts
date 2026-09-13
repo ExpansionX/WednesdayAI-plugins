@@ -37,12 +37,32 @@ const makeProfile = (root: string, overrides: Record<string, unknown> = {}) => {
   mkdirSync(waiBundleSourceDir, { recursive: true });
   const runner = path.join(waiBundleSourceDir, "wai-dag-run.sh");
   writeFileSync(runner, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+  const verifierBinding = {
+    gateScriptBasename: "task-gate.sh",
+    gateTimeoutMs: 30 * 60 * 1000,
+    taskDirectory: "docs/plans/fixture-topic",
+    testCommand: "npm --prefix plugins/shohin/spike exec -- vitest run {scope}",
+    typecheckCommand: "npm --prefix plugins/shohin/spike run typecheck",
+  };
+  const generationHashes = {
+    VERSION: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    cost: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    executors: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    gate: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    run: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    watch: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  };
   const profile = {
     approved: true,
     approvedAt: "2026-09-13T21:00:00Z",
     dependencies: [{ path: runner, sha256: sha256(readFileSync(runner, "utf-8")) }],
     expectedArgv: ["bash", "wai-dag-run.sh", "fixture-topic"],
+    expectedCommonGitDir: root,
+    expectedEnvPath: "/usr/bin:/bin",
+    expectedGenerationHashes: generationHashes,
     expectedManifestHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    expectedStartingHead: "1111111111111111111111111111111111111111",
+    expectedVerifier: verifierBinding,
     externalBaseline: "0123456789abcdef0123456789abcdef01234567",
     heartbeatPollIntervalMs: 250,
     heartbeatStaleAfterMs: 60000,
@@ -126,6 +146,28 @@ describe("approved no-provider profile registry", () => {
       heartbeatStaleAfterMs: 60000,
       maxAttempts: 1,
     });
+  });
+
+  it("rejects profiles missing mandatory approved no-provider bindings", () => {
+    for (const key of [
+      "expectedCommonGitDir",
+      "expectedEnvPath",
+      "expectedGenerationHashes",
+      "expectedStartingHead",
+      "expectedVerifier",
+    ] as const) {
+      const root = makeTempRoot(`missing-${key}`);
+      const profile = makeProfile(root) as Record<string, unknown>;
+      delete profile[key];
+      profile.profileDigest = canonicalJsonDigest(profile);
+      expect(() =>
+        resolveApprovedNoProviderProfile({
+          profileId: "fixture-profile",
+          registryPath: writeRegistry(root, profile),
+          request: { targetRepoRoot: profile.targetRepoRoot as string, topic: "fixture-topic" },
+        }),
+      ).toThrow(/missing required no-provider bindings|profile expected/i);
+    }
   });
 
   it("rejects malformed approved verifier and generation hash bindings", () => {

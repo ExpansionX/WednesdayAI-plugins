@@ -62,12 +62,12 @@ interface ApprovedProfileEntry {
   readonly approvedAt?: string;
   readonly dependencies: readonly DependencyPin[];
   readonly expectedArgv: readonly string[];
-  readonly expectedCommonGitDir?: string;
-  readonly expectedEnvPath?: string;
-  readonly expectedGenerationHashes?: ApprovedNoProviderGenerationHashes;
+  readonly expectedCommonGitDir: string;
+  readonly expectedEnvPath: string;
+  readonly expectedGenerationHashes: ApprovedNoProviderGenerationHashes;
   readonly expectedManifestHash: string;
-  readonly expectedStartingHead?: string;
-  readonly expectedVerifier?: ApprovedNoProviderVerifierBinding;
+  readonly expectedStartingHead: string;
+  readonly expectedVerifier: ApprovedNoProviderVerifierBinding;
   readonly externalBaseline: string;
   readonly generationId?: string;
   readonly heartbeatPollIntervalMs: number;
@@ -214,10 +214,23 @@ const validateProfile = (profile: ApprovedProfileEntry): void => {
   ]) {
     assertString(raw[key], `profile ${key}`);
   }
-  for (const key of ["generationId", "runId", "approvedAt", "expectedCommonGitDir", "expectedEnvPath", "expectedStartingHead"]) {
-    if (raw[key] !== undefined) {
+  for (const key of [
+    "expectedCommonGitDir",
+    "expectedEnvPath",
+    "expectedStartingHead",
+    "generationId",
+    "runId",
+    "approvedAt",
+  ]) {
+    if (raw[key] !== undefined || key.startsWith("expected")) {
       assertString(raw[key], `profile ${key}`);
     }
+  }
+  if (profile.expectedVerifier === undefined || profile.expectedGenerationHashes === undefined) {
+    throw new ApprovedProfileError(
+      "approved_profile_rejected",
+      "Profile is missing required no-provider bindings",
+    );
   }
   if (!Array.isArray(profile.expectedArgv) || !profile.expectedArgv.every((entry) => typeof entry === "string")) {
     throw new ApprovedProfileError("approved_profile_rejected", "Profile expected argv is malformed");
@@ -246,9 +259,7 @@ const validateProfile = (profile: ApprovedProfileEntry): void => {
   }
   assertSha(profile.externalBaseline, "external baseline");
   assertSha256(profile.expectedManifestHash, "expected manifest hash");
-  if (profile.expectedStartingHead !== undefined) {
-    assertSha(profile.expectedStartingHead, "expected starting HEAD");
-  }
+  assertSha(profile.expectedStartingHead, "expected starting HEAD");
   assertComponent(profile.id, "profile id");
   assertComponent(profile.topic, "profile topic");
   if (profile.maxAttempts !== 1 || profile.providerAccess !== "denied") {
