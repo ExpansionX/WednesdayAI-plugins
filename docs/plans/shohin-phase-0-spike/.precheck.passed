@@ -1,3 +1,3 @@
 spec=docs/superpowers/specs/2026-09-05-shohin-phase-0-spike.md
-spec_sha=97730a71423e82176295f31da90da6dc88721ea0
-base=main
+spec_sha=ca609fff5cf477a0fb59b07886843e1bf9b57f6f
+base=5be287d73394f9bee55e9de84e7d98111c9a981d
