@@ -1,0 +1,9 @@
+{
+  "expectedOutcome": "gate_nonzero",
+  "expectedTasks": [
+    "T001",
+    "T002"
+  ],
+  "profileId": "shohin-r5-no-provider-20260913t20244",
+  "topic": "shohin-r5-prof-gatefail-20260913t20244"
+}
