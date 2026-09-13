@@ -468,6 +468,241 @@ $ git hash-object docs/superpowers/specs/2026-09-05-shohin-phase-0-spike.md
 ca609fff5cf477a0fb59b07886843e1bf9b57f6f
 ~~~
 
+## Target topic
+<!-- evidence:target-topic -->
+
+UTC target preparation: 2026-09-13T13:54:48Z. No paid WAI/model dispatch was run.
+
+Target worktree identity:
+
+```text
+$ git rev-parse HEAD
+8f6285b0d514a6e91498f4e9e7a62c74d0a82c95
+
+$ mkdir -m 700 /tmp/shohin-spike-target-worktree-010
+$ git worktree add -b spike/shohin-spike-target /tmp/shohin-spike-target-worktree-010 8f6285b0d514a6e91498f4e9e7a62c74d0a82c95
+Preparing worktree (new branch 'spike/shohin-spike-target')
+HEAD is now at 8f6285b docs(shohin): record corrected live gateway checks
+
+$ stat -c '%a %U:%G %n' /tmp/shohin-spike-target-worktree-010 /tmp/shohin-spike-target-worktree-010/.git
+700 david:david /tmp/shohin-spike-target-worktree-010
+600 david:david /tmp/shohin-spike-target-worktree-010/.git
+
+$ realpath /data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter
+/data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter
+
+$ realpath /tmp/shohin-spike-target-worktree-010
+/tmp/shohin-spike-target-worktree-010
+
+$ realpath /data/Code/WednesdayAI-plugins/.git
+/data/Code/WednesdayAI-plugins/.git
+
+$ git -C /tmp/shohin-spike-target-worktree-010 rev-parse --path-format=absolute --show-toplevel
+/tmp/shohin-spike-target-worktree-010
+
+$ git -C /tmp/shohin-spike-target-worktree-010 rev-parse --path-format=absolute --git-common-dir
+/data/Code/WednesdayAI-plugins/.git
+```
+
+Final worktree porcelain:
+
+```text
+$ git worktree list --porcelain
+worktree /data/Code/WednesdayAI-plugins
+HEAD 5d6ab5673b37b6b40428bfc47f6c68218122e2a5
+branch refs/heads/main
+
+worktree /home/david/.local/share/opencode/worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter
+HEAD 8f6285b0d514a6e91498f4e9e7a62c74d0a82c95
+branch refs/heads/vivid-otter
+
+worktree /tmp/shohin-spike-target-worktree-010
+HEAD 1e91a5d7d7cbcb849b682e5c7d70a2b44b4b3bd3
+branch refs/heads/spike/shohin-spike-target
+```
+
+Target branch commits:
+
+```text
+$ git -C /tmp/shohin-spike-target-worktree-010 log --oneline 8f6285b0d514a6e91498f4e9e7a62c74d0a82c95..HEAD
+1e91a5d docs(shohin): submit isolated target plan
+263731c test(shohin): add target storage gate fixture
+9b969df docs(shohin): prepare target spec baseline
+```
+
+WAI submitters and final plan gates:
+
+```text
+$ bash /home/david/.agents/wai/scripts/wai-readme.sh shohin-spike-target docs/superpowers/specs/2026-09-13-shohin-spike-target.md 'Shohin spike target'
+(exit 0) created dev-docs/workstreams/shohin-spike-target/README.md
+
+$ bash /home/david/.agents/wai/scripts/wai-submit-spec.sh < docs/plans/shohin-spike-target/envelope/spec-envelope.json
+(exit 0)
+
+$ bash /home/david/.agents/wai/scripts/wai-precheck.sh shohin-spike-target --spec docs/superpowers/specs/2026-09-13-shohin-spike-target.md --base 8f6285b0d514a6e91498f4e9e7a62c74d0a82c95
+(exit 0) LOCAL PASS: token written to docs/plans/shohin-spike-target/.precheck.passed
+
+$ bash /home/david/.agents/wai/scripts/wai-submit-plan.sh < docs/plans/shohin-spike-target/envelope/plan-envelope.json
+(exit 0)
+
+$ bash /home/david/.agents/wai/scripts/wai-submit-spec.sh --verify-render docs/superpowers/specs/2026-09-13-shohin-spike-target.md spec < docs/plans/shohin-spike-target/envelope/spec-envelope.json
+(exit 0, no output)
+
+$ bash /home/david/.agents/wai/scripts/wai-submit-plan.sh --verify-render docs/plans/shohin-spike-target plan < docs/plans/shohin-spike-target/envelope/plan-envelope.json
+(exit 0, no output)
+
+$ bash /home/david/.agents/wai/scripts/wai-branch-guard.sh --guard
+wai-branch-guard: OK (branch 'spike/shohin-spike-target' is not a protected primary checkout)
+
+$ bash /home/david/.agents/wai/scripts/wai-freshness.sh shohin-spike-target
+FRESHNESS PASS: 'shohin-spike-target' spec matches the precheck token
+
+$ bash /home/david/.agents/wai/scripts/wai-readiness.sh shohin-spike-target
+readiness: no unfolded pre-execution findings for 'shohin-spike-target' at or above severity 'medium'
+
+$ bash /home/david/.agents/wai/scripts/wai-plan-lint.sh shohin-spike-target
+PLAN-LINT PASS: shohin-spike-target - plan/frontmatter consistent, verification + SC-coverage complete
+
+$ bash /home/david/.agents/wai/scripts/wai-precheck.sh shohin-spike-target --spec docs/superpowers/specs/2026-09-13-shohin-spike-target.md --base 8f6285b0d514a6e91498f4e9e7a62c74d0a82c95 --check-only
+CHECK-ONLY PASS: all asserts passed for 'shohin-spike-target'; no token written.
+```
+
+Committed target artifacts:
+
+```text
+$ git -C /tmp/shohin-spike-target-worktree-010 ls-tree -r --name-only HEAD docs/plans/shohin-spike-target dev-docs/workstreams/shohin-spike-target docs/superpowers/specs/2026-09-13-shohin-spike-target.md docs/superpowers/specs/2026-09-13-shohin-spike-target.decisions.json
+dev-docs/workstreams/shohin-spike-target/README.md
+docs/plans/shohin-spike-target/.precheck.passed
+docs/plans/shohin-spike-target/decisions-ledger.md
+docs/plans/shohin-spike-target/envelope/plan-envelope.json
+docs/plans/shohin-spike-target/envelope/spec-envelope.json
+docs/plans/shohin-spike-target/phase-1-target-manifest-boundary.md
+docs/plans/shohin-spike-target/phase-1/001-add-closed-shohin-storage-sqlitepath-config.md
+docs/plans/shohin-spike-target/phase-1/002-add-shohin-manifest-node-test.md
+docs/plans/shohin-spike-target/plan.md
+docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs
+docs/superpowers/specs/2026-09-13-shohin-spike-target.decisions.json
+docs/superpowers/specs/2026-09-13-shohin-spike-target.md
+```
+
+Rendered task metadata:
+
+```json
+{
+  "taskCount": 2,
+  "tasks": [
+    {
+      "path": "docs/plans/shohin-spike-target/phase-1/001-add-closed-shohin-storage-sqlitepath-config.md",
+      "id": "001",
+      "depends_on": "[]",
+      "scope_test": "docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs",
+      "allowed_change": "edit",
+      "files": ["plugins/shohin/openclaw.plugin.json"]
+    },
+    {
+      "path": "docs/plans/shohin-spike-target/phase-1/002-add-shohin-manifest-node-test.md",
+      "id": "002",
+      "depends_on": "[\"001\"]",
+      "scope_test": "plugins/shohin/manifest.test.mjs",
+      "allowed_change": "create",
+      "files": ["plugins/shohin/manifest.test.mjs"]
+    }
+  ]
+}
+```
+
+The submitter-rendered task files initially carried WAI's legacy generic `~/.claude/wai/scripts/task-gate.sh` Done line. The task metadata, plan rows, file lists and dependencies were rendered by the submitter; only those two generated Done lines were corrected in the target branch to concrete current-path gates under `/home/david/.agents/wai/scripts`.
+
+Targeted red/green proof:
+
+```text
+$ node --test docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs
+(exit 1) AssertionError: actual undefined, expected 'object'
+
+$ git diff --name-status
+M	plugins/shohin/openclaw.plugin.json
+
+$ node --test docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs
+(exit 0) tests 1, pass 1, fail 0
+
+$ node scripts/validate-manifest.mjs
+validate-manifest: OK (4 plugin(s))
+
+$ git commit -m 'feat(shohin): target add storage sqlite path'
+990334304cdd6d45d29f2c7c1597a1802562a94d
+
+$ WAI_TYPECHECK_CMD='node --check docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs' bash /home/david/.agents/wai/scripts/task-gate.sh shohin-spike-target 001 --commit 9903343
+CONFORMS: task 001 passed all deterministic gates
+GATE_FAIL_CHECK=none
+
+$ git show --name-status --pretty=format: 9903343
+M	plugins/shohin/openclaw.plugin.json
+
+$ node --check plugins/shohin/manifest.test.mjs
+(exit 0)
+
+$ node --test plugins/shohin/manifest.test.mjs
+(exit 0) tests 1, pass 1, fail 0
+
+$ git commit -m 'test(shohin): target add manifest storage test'
+3aaf446311f965ed5b27cf1fe936e1b8dc6dba12
+
+$ WAI_TYPECHECK_CMD='node --check plugins/shohin/manifest.test.mjs' bash /home/david/.agents/wai/scripts/task-gate.sh shohin-spike-target 002 --commit 3aaf446
+CONFORMS: task 002 passed all deterministic gates
+GATE_FAIL_CHECK=none
+
+$ git show --name-status --pretty=format: 3aaf446
+A	plugins/shohin/manifest.test.mjs
+
+$ git reset --hard 1e91a5d7d7cbcb849b682e5c7d70a2b44b4b3bd3
+HEAD is now at 1e91a5d docs(shohin): submit isolated target plan
+
+$ git -C /tmp/shohin-spike-target-worktree-010 status --porcelain
+(exit 0, no output)
+
+$ git -C /tmp/shohin-spike-target-worktree-010 branch --show-current
+spike/shohin-spike-target
+```
+
+Linked worktree/common-dir checks:
+
+```text
+$ node --input-type=module <resolveLinkedWorktree actual-target and different-repo fixture>
+{
+  "registered": "/data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter",
+  "target": "/tmp/shohin-spike-target-worktree-010",
+  "accepted": "/tmp/shohin-spike-target-worktree-010",
+  "otherRepo": "/tmp/shohin-path003-other-C8OSs2",
+  "differentRepoRejected": true,
+  "rejection": "Linked worktree common git directory does not match registered root"
+}
+
+$ npm --prefix plugins/shohin/spike exec -- vitest run plugins/shohin/spike/src/environment.test.ts plugins/shohin/spike/index.test.ts
+Test Files  2 passed (2)
+Tests  18 passed (18)
+
+$ npm --prefix plugins/shohin/spike run typecheck
+(exit 0)
+
+$ npm --prefix plugins/shohin/spike run build
+(exit 0)
+```
+
+Target hygiene:
+
+```text
+$ printenv WAI_DAG_TEST_MODE
+(exit 1, unset)
+
+$ git -C /tmp/shohin-spike-target-worktree-010 diff --check 8f6285b0d514a6e91498f4e9e7a62c74d0a82c95..HEAD
+(exit 0, no output)
+
+$ git -C /tmp/shohin-spike-target-worktree-010 status --short --branch
+## spike/shohin-spike-target
+```
+
+Dependency note: the target worktree intentionally did not carry the nested package's untracked `plugins/shohin/spike/node_modules`; direct target-worktree `npm --prefix plugins/shohin/spike run typecheck` and `run build` failed there with `tsc: not found`, and `index.test.ts` could not resolve `wednesdayai/plugin-sdk`. The same code-level checks passed in the outer workspace where the nested package dependencies from task002 are installed. Target-specific WAI/Git/Node surface checks above all ran in `/tmp/shohin-spike-target-worktree-010`.
+
 ## SC1 — scope cancellation
 <!-- evidence:SC1 -->
 
