@@ -371,7 +371,7 @@ describe("Shohin systemd scope controller", () => {
   });
 
 
-  it("captures bounded sanitized launcher stderr on the wait handle", async () => {
+  it("keeps only closed launcher diagnostics on the wait handle", async () => {
     const temp = makeTempRoot("launcher-stderr");
     const launcher = path.join(temp, "fake-systemd-run.sh");
     const runDir = path.join(temp, "run");
@@ -381,8 +381,10 @@ describe("Shohin systemd scope controller", () => {
       [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
+        "printf 'Running as unit: shohin-shohin-phase-0-spike-run005.scope; invocation ID: 0123456789abcdef0123456789abcdef\\n' >&2",
         "printf 'OPENCLAW_GATEWAY_TOKEN=super-secret\\n' >&2",
         "printf 'Bearer abc.def\\n' >&2",
+        "printf 'watchdog.sh: heartbeat stale now_ms=1789326610000 mtime_ms=1789326600000 age_ms=10000 stale_ms=5000\\n' >&2",
         "sleep 0.1",
         "exit 42",
         "",
@@ -401,8 +403,15 @@ describe("Shohin systemd scope controller", () => {
 
     expect(result.status).toBe(42);
     expect(result.stderrTruncated).toBe(false);
-    expect(result.stderr).toContain("OPENCLAW_GATEWAY_TOKEN=[redacted]");
-    expect(result.stderr).toContain("Bearer [redacted]");
+    expect(result.stderr).toContain(
+      "systemd-run: started shohin-shohin-phase-0-spike-run005.scope invocation=0123456789abcdef0123456789abcdef",
+    );
+    expect(result.stderr).toContain(
+      "watchdog.sh: heartbeat stale now_ms=1789326610000 mtime_ms=1789326600000 age_ms=10000 stale_ms=5000",
+    );
+    expect(result.stderr).toContain("[unrecognized launch stderr suppressed]");
+    expect(result.stderr).not.toContain("OPENCLAW_GATEWAY_TOKEN");
+    expect(result.stderr).not.toContain("Bearer");
     expect(result.stderr).not.toContain("super-secret");
     expect(result.stderr).not.toContain("abc.def");
   });

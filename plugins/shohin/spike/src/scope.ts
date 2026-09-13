@@ -246,7 +246,7 @@ const nodeCommandAdapter: CommandAdapter = {
         }
         resolve({
           status,
-          stderr: sanitizeLaunchStderr(stderr.content()),
+          stderr: filterLaunchStderr(stderr.content()),
           stderrTruncated: stderr.truncated(),
         });
       };
@@ -319,15 +319,43 @@ const createBoundedStderrBuffer = () => {
   };
 };
 
-const sanitizeLaunchStderr = (stderr: string): string =>
-  stderr
-    .replace(/\0/g, "")
-    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, "?")
-    .replace(
-      /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|API_KEY|AUTH)[A-Z0-9_]*)=([^\s]+)/gi,
-      "$1=[redacted]",
-    )
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/gi, "$1 [redacted]");
+const launchStderrSuppressedLine = "[unrecognized launch stderr suppressed]";
+const watchdogDiagnosticPattern =
+  /^watchdog\.sh: heartbeat (?:missing|date_failed|date_invalid|stat_failed|stat_invalid|stale) now_ms=(?:unknown|\d{13}) mtime_ms=(?:unknown|\d{13}) age_ms=(?:unknown|-?\d+) stale_ms=\d+$/;
+const systemdRunStartedPattern =
+  /^Running as unit: (shohin-[A-Za-z0-9._-]+\.scope); invocation ID: ([0-9a-f]{32})$/;
+
+const normalizeLaunchStderr = (stderr: string): string =>
+  stderr.replace(/\0/g, "").replace(/[^\x09\x0a\x0d\x20-\x7e]/g, "?");
+
+const filterLaunchStderr = (stderr: string): string => {
+  const lines: string[] = [];
+  let suppressed = false;
+
+  for (const line of normalizeLaunchStderr(stderr).split(/\r?\n/)) {
+    if (line.length === 0) {
+      continue;
+    }
+    if (watchdogDiagnosticPattern.test(line)) {
+      lines.push(line);
+      continue;
+    }
+    const systemdStarted = line.match(systemdRunStartedPattern);
+    if (systemdStarted !== null) {
+      lines.push(
+        `systemd-run: started ${systemdStarted[1]} invocation=${systemdStarted[2]}`,
+      );
+      continue;
+    }
+    suppressed = true;
+  }
+
+  if (suppressed) {
+    lines.push(launchStderrSuppressedLine);
+  }
+
+  return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
+};
 
 const nodeFilesystem: ScopeFilesystem = {
   readTextFile(filePath) {

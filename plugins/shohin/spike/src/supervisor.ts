@@ -1607,9 +1607,10 @@ const waitForScopeExit = async (scopeHandle: ScopedRunHandle): Promise<ScopeWait
   try {
     return await scopeHandle.wait();
   } catch (error) {
+    void error;
     return {
       status: 127,
-      stderr: publicErrorMessage(error),
+      stderr: "[scope wait rejected before diagnostics could be collected]\n",
       stderrTruncated: false,
     };
   }
