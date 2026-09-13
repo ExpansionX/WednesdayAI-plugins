@@ -720,6 +720,36 @@ describe("SpikeSupervisor", () => {
     expect(fixture.scope.launches).toHaveLength(3);
   });
 
+  it("does not refresh recovery heartbeat when an active record's scope is stopped", async () => {
+    const root = makeTempRoot("recover-stopped");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const supervisor = new SpikeSupervisor(fixture.dependencies);
+    await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    const runRoot = path.join(root, "run-data");
+    const before = scopeHeartbeat(runRoot, "run007");
+    fixture.scope.identity = stoppedScopeIdentity();
+    fixture.clock.current = "2026-09-13T12:01:00.000Z";
+
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    const result = await restartedSupervisor.recover({ runRoot });
+    const record = readRecord(runRoot);
+
+    expect(result).toEqual({
+      ignoredRunIds: ["run007"],
+      refreshedActiveRunIds: [],
+      scheduledTruthRunIds: [],
+    });
+    expect(scopeHeartbeat(runRoot, "run007")).toBe(before);
+    expect(record.status).toBe("unknown");
+    expect(record.journal.at(-1)?.event).toBe("recovery_scope_stopped_without_exit");
+    expect(fixture.identity.verifyActiveCalls).toBe(1);
+    expect(fixture.scope.inspections).toHaveLength(2);
+    expect(fixture.scope.inspections.at(-1)?.controlEnv).toEqual(
+      fixture.scope.expectedControlEnv,
+    );
+  });
+
   it("cancels active runs idempotently without reset or retry", async () => {
     const root = makeTempRoot("cancel");
     mkdirSync(path.join(root, "source-home"), { recursive: true });

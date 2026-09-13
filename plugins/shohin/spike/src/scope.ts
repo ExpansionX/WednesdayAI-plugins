@@ -133,6 +133,7 @@ export type ScopeCgroupMembership = "absent" | "empty" | "populated";
 export interface ScopeIdentity {
   readonly cgroupEventsPath?: string;
   readonly cgroupMembership?: ScopeCgroupMembership;
+  readonly cgroupMembershipControlGroup?: string;
   readonly controlGroup?: string;
   readonly id: string;
   readonly invocationId?: string;
@@ -146,6 +147,7 @@ export interface ScopeController {
   inspect(
     scopeId: string,
     controlEnv: Readonly<Record<string, string>>,
+    recordedIdentity?: ScopeIdentity,
   ): Promise<ScopeIdentity>;
   cancel(
     handle: ScopeCancelHandle,
@@ -416,6 +418,7 @@ export const createScopeController = ({
   const inspect = async (
     scopeId: string,
     controlEnv: Readonly<Record<string, string>>,
+    recordedIdentity?: ScopeIdentity,
   ): Promise<ScopeIdentity> =>
     inspectScope(
       scopeId,
@@ -424,6 +427,7 @@ export const createScopeController = ({
       systemctlCommand,
       filesystem,
       trustedCgroupRoot,
+      recordedIdentity,
     );
 
   const cancel = async (
@@ -452,6 +456,7 @@ export const createScopeController = ({
       systemctlCommand,
       filesystem,
       trustedCgroupRoot,
+      handle.identity,
     );
     if (
       scopeIdentityIsStopped(
@@ -508,6 +513,7 @@ export const createScopeController = ({
       systemctlCommand,
       filesystem,
       trustedCgroupRoot,
+      handle.identity,
     );
     if (
       scopeIdentityIsStopped(
@@ -744,6 +750,7 @@ const waitForStoppedScope = async ({
       systemctlCommand,
       filesystem,
       cgroupRoot,
+      recordedIdentity,
     );
     if (scopeIdentityIsStopped(scopeId, identity, recordedIdentity, filesystem, cgroupRoot)) {
       return true;
@@ -858,7 +865,16 @@ export const verifyScopeIdentityBinding = (
 
   const recordedControlGroup = trustedControlGroup(recorded.controlGroup);
   const currentControlGroup = trustedControlGroup(current.controlGroup);
-  if (recordedControlGroup === undefined || currentControlGroup === undefined) {
+  if (recordedControlGroup === undefined) {
+    throw new ScopeControllerError(
+      "scope_identity_unverified",
+      `Refusing to signal ${scopeId}: missing trustworthy cgroup identity`,
+    );
+  }
+  if (currentControlGroup === undefined) {
+    if (releasedTerminalBindingMatches(current, recordedControlGroup)) {
+      return;
+    }
     throw new ScopeControllerError(
       "scope_identity_unverified",
       `Refusing to signal ${scopeId}: missing trustworthy cgroup identity`,
@@ -870,6 +886,19 @@ export const verifyScopeIdentityBinding = (
       `Refusing to signal ${scopeId}: cgroup identity changed`,
     );
   }
+};
+
+const releasedTerminalBindingMatches = (
+  current: ScopeIdentity,
+  recordedControlGroup: string,
+): boolean => {
+  if (current.controlGroup !== undefined || classifyScopeLabels(current) !== "terminal") {
+    return false;
+  }
+  if (terminalScopeMembership(current) === "populated") {
+    return false;
+  }
+  return current.cgroupMembershipControlGroup === recordedControlGroup;
 };
 
 type ScopeLabelClassification = "active" | "collected" | "terminal";
@@ -934,6 +963,52 @@ interface CgroupMembershipObservation {
   readonly eventsPath: string;
   readonly kind: ScopeCgroupMembership;
 }
+
+const terminalMembershipControlGroup = (
+  scopeId: string,
+  identity: ScopeIdentity,
+  recordedIdentity: ScopeIdentity | undefined,
+): string | undefined => {
+  const currentControlGroup = trustedControlGroup(identity.controlGroup);
+  if (currentControlGroup !== undefined) {
+    return currentControlGroup;
+  }
+  if (identity.controlGroup !== undefined) {
+    throw new ScopeControllerError(
+      "scope_membership_unavailable",
+      `Scope ${scopeId} has an unsafe cgroup path`,
+    );
+  }
+  if (recordedIdentity === undefined) {
+    return undefined;
+  }
+  if (recordedIdentity.id !== scopeId) {
+    throw new ScopeControllerError(
+      "scope_identity_mismatch",
+      `Recorded scope identity mismatch: expected ${scopeId}, got ${recordedIdentity.id}`,
+    );
+  }
+
+  const recordedControlGroup = trustedControlGroup(recordedIdentity.controlGroup);
+  if (recordedControlGroup === undefined) {
+    return undefined;
+  }
+  const currentInvocationId = trustedInvocationId(identity.invocationId);
+  const recordedInvocationId = trustedInvocationId(recordedIdentity.invocationId);
+  if (currentInvocationId === undefined || recordedInvocationId === undefined) {
+    throw new ScopeControllerError(
+      "scope_identity_unverified",
+      `Refusing to inspect ${scopeId}: missing trustworthy systemd invocation identity`,
+    );
+  }
+  if (currentInvocationId !== recordedInvocationId) {
+    throw new ScopeControllerError(
+      "scope_identity_mismatch",
+      `Refusing to inspect ${scopeId}: systemd invocation identity changed`,
+    );
+  }
+  return recordedControlGroup;
+};
 
 const readCgroupMembership = (
   filesystem: ScopeFilesystem,
@@ -1003,6 +1078,7 @@ const inspectScope = async (
   systemctlCommand: string,
   filesystem: ScopeFilesystem,
   cgroupRoot: string,
+  recordedIdentity?: ScopeIdentity,
 ): Promise<ScopeIdentity> => {
   assertScopeId(scopeId);
   const controlEnv = assertControlEnvironment(controlEnvInput);
@@ -1049,15 +1125,25 @@ const inspectScope = async (
     return identity;
   }
 
+  const membershipControlGroup = terminalMembershipControlGroup(
+    scopeId,
+    identity,
+    recordedIdentity,
+  );
+  if (membershipControlGroup === undefined) {
+    return identity;
+  }
+
   const membership = readCgroupMembership(
     filesystem,
-    identity.controlGroup,
+    membershipControlGroup,
     cgroupRoot,
   );
   return {
     ...identity,
     cgroupEventsPath: membership.eventsPath,
     cgroupMembership: membership.kind,
+    cgroupMembershipControlGroup: membershipControlGroup,
   };
 };
 

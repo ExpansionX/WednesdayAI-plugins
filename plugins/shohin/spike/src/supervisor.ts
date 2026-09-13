@@ -699,10 +699,24 @@ export class SpikeSupervisor {
         }
         const controlEnv = readRecordedControlEnvironment(record);
         await this.identity.verifyActiveRunIdentity(record);
-        const scopeIdentity = await this.scope.inspect(record.scope.scopeId, controlEnv);
-        if (scopeIdentityIsRunning(scopeIdentity)) {
+        const scopeIdentity = await this.scope.inspect(
+          record.scope.scopeId,
+          controlEnv,
+          record.scope.identity,
+        );
+        if (!scopeIdentityIsRunning(scopeIdentity)) {
           verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+          this.activeTopics.delete(record.topic);
+          this.writeRecord({
+            ...record,
+            status: "unknown",
+            updatedAt: this.clock.nowIso(),
+            journal: appendJournal(record, this.clock, "recovery_scope_stopped_without_exit"),
+          });
+          ignoredRunIds.push(runId);
+          continue;
         }
+        verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
         const updated = {
           ...record,
           heartbeat: this.refreshHeartbeat(record.runDir),
@@ -801,7 +815,11 @@ export class SpikeSupervisor {
     if (record.scope === undefined) {
       return;
     }
-    const scopeIdentity = await this.scope.inspect(record.scope.scopeId, controlEnv);
+    const scopeIdentity = await this.scope.inspect(
+      record.scope.scopeId,
+      controlEnv,
+      record.scope.identity,
+    );
     if (scopeIdentityIsRunning(scopeIdentity)) {
       throw new SpikeSupervisorError(
         "scope_not_stopped",

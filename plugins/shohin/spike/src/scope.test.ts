@@ -562,6 +562,65 @@ describe("Shohin systemd scope controller", () => {
     expect(filesystem.readLog).toEqual([cgroupEventsPath()]);
   });
 
+  it("accepts released terminal scopes when the recorded cgroup disappeared", async () => {
+    const { command, controller, filesystem, process } = makeFixture();
+    command.execOutputs = [
+      successOutput(
+        runningIdentity({ controlGroup: undefined, mainPid: 0, subState: "dead" }),
+      ),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).resolves.toEqual({ sentKill: false, sentTerm: false });
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+    expect(filesystem.readLog).toEqual([cgroupEventsPath()]);
+  });
+
+  it("refuses released terminal scopes when recorded membership is populated or unreadable", async () => {
+    for (const { expectedCode, setup } of [
+      {
+        expectedCode: "scope_identity_unverified",
+        setup: (fixture: ReturnType<typeof makeFixture>) => {
+          fixture.filesystem.files.set(cgroupEventsPath(), "populated 1\n");
+        },
+      },
+      {
+        expectedCode: "scope_membership_unavailable",
+        setup: (fixture: ReturnType<typeof makeFixture>) => {
+          fixture.filesystem.files.set(cgroupEventsPath(), "populated maybe\n");
+        },
+      },
+      {
+        expectedCode: "scope_membership_unavailable",
+        setup: (fixture: ReturnType<typeof makeFixture>) => {
+          fixture.filesystem.errors.set(
+            cgroupEventsPath(),
+            Object.assign(new Error("permission denied"), { code: "EACCES" }),
+          );
+        },
+      },
+    ]) {
+      const fixture = makeFixture();
+      setup(fixture);
+      fixture.command.execOutputs = [
+        successOutput(
+          runningIdentity({ controlGroup: undefined, mainPid: 0, subState: "failed" }),
+        ),
+      ];
+
+      await expect(
+        fixture.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+      ).rejects.toMatchObject({ code: expectedCode });
+
+      expect(fixture.process.signals).toEqual([]);
+      expect(fixture.command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+      expect(fixture.filesystem.readLog).toEqual([cgroupEventsPath()]);
+    }
+  });
+
   it("uses verified unit TERM for known missing launcher identity and waits for scope stop", async () => {
     const { clock, command, controller, filesystem, process } = makeFixture();
     filesystem.files.delete("/proc/4242/stat");
