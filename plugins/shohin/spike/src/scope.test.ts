@@ -77,15 +77,34 @@ class FakeCommandAdapter implements CommandAdapter {
 }
 
 class FakeFilesystem implements ScopeFilesystem {
+  public readonly errors = new Map<string, unknown>();
   public readonly files = new Map<string, string>();
+  public readonly reads = new Map<string, unknown[]>();
   public readonly writable = new Set<string>();
   public readonly writes: Array<{ readonly filePath: string; readonly content: string }> =
     [];
 
   public readTextFile(filePath: string): string {
+    const readQueue = this.reads.get(filePath);
+    if (readQueue !== undefined && readQueue.length > 0) {
+      const next = readQueue.shift();
+      if (next instanceof Error) {
+        throw next;
+      }
+      if (typeof next !== "string") {
+        throw new Error(`invalid fake file read: ${filePath}`);
+      }
+      return next;
+    }
+    const error = this.errors.get(filePath);
+    if (error !== undefined) {
+      throw error;
+    }
     const content = this.files.get(filePath);
     if (content === undefined) {
-      throw new Error(`missing fake file: ${filePath}`);
+      throw Object.assign(new Error(`missing fake file: ${filePath}`), {
+        code: "ENOENT",
+      });
     }
     return content;
   }
@@ -133,6 +152,77 @@ const makeTempRoot = (name: string): string => {
 
 const makeProcStat = (pid: number, startTime: string): string =>
   `${pid} (systemd-run) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 ${startTime} 21 22\n`;
+
+const scopeId = "shohin-shohin-phase-0-spike-run005.scope";
+const invocationId = "0123456789abcdef0123456789abcdef";
+const controlGroup = "/user.slice/user-1000.slice/app.slice/shohin.scope";
+
+const showArgs = () => [
+  "--user",
+  "show",
+  scopeId,
+  "--property=Id",
+  "--property=MainPID",
+  "--property=ControlGroup",
+  "--property=SubState",
+  "--property=LoadState",
+  "--property=InvocationID",
+  "--no-pager",
+];
+
+const unitSignalArgs = (signal: "SIGTERM" | "SIGKILL") => [
+  "--user",
+  "kill",
+  "--kill-whom=all",
+  `--signal=${signal}`,
+  scopeId,
+];
+
+const runningIdentity = (overrides: Record<string, string | number | undefined> = {}) => ({
+  controlGroup,
+  id: scopeId,
+  invocationId,
+  loadState: "loaded",
+  mainPid: 77,
+  subState: "running",
+  ...overrides,
+});
+
+const stoppedIdentity = (overrides: Record<string, string | number | undefined> = {}) => ({
+  controlGroup: undefined,
+  id: scopeId,
+  invocationId: undefined,
+  loadState: "not-found",
+  mainPid: undefined,
+  subState: "dead",
+  ...overrides,
+});
+
+const showOutput = (
+  identity: ReturnType<typeof runningIdentity> | ReturnType<typeof stoppedIdentity>,
+): string =>
+  [
+    `Id=${identity.id}`,
+    `MainPID=${identity.mainPid ?? 0}`,
+    ...(identity.controlGroup === undefined ? [] : [`ControlGroup=${identity.controlGroup}`]),
+    `SubState=${identity.subState ?? ""}`,
+    `LoadState=${identity.loadState ?? ""}`,
+    ...(identity.invocationId === undefined ? [] : [`InvocationID=${identity.invocationId}`]),
+    "",
+  ].join("\n");
+
+const successOutput = (
+  identity: ReturnType<typeof runningIdentity> | ReturnType<typeof stoppedIdentity>,
+): CommandOutput => ({ status: 0, stdout: showOutput(identity), stderr: "" });
+
+const cancelHandle = (overrides: Record<string, unknown> = {}) => ({
+  controlEnv: baseLaunchOptions().controlEnv,
+  controlPid: 4242,
+  controlStartTime: "998877",
+  identity: runningIdentity(),
+  scopeId,
+  ...overrides,
+});
 
 const makeFixture = () => {
   const command = new FakeCommandAdapter();
@@ -187,7 +277,7 @@ describe("Shohin systemd scope controller", () => {
     const { command, controller } = makeFixture();
     const handle = await controller.launch(baseLaunchOptions());
 
-    expect(handle.scopeId).toBe("shohin-shohin-phase-0-spike-run005.scope");
+    expect(handle.scopeId).toBe(scopeId);
     expect(handle.controlPid).toBe(4242);
     expect(handle.controlStartTime).toBe("998877");
     expect(command.spawns).toHaveLength(1);
@@ -213,7 +303,7 @@ describe("Shohin systemd scope controller", () => {
     expect(spawn.argv).toContain("SendSIGKILL=yes");
     expect(spawn.argv.slice(spawn.argv.indexOf("--unit"), spawn.argv.indexOf("--unit") + 2)).toEqual([
       "--unit",
-      "shohin-shohin-phase-0-spike-run005.scope",
+      scopeId,
     ]);
 
     const executorBoundary = spawn.argv.indexOf("--");
@@ -228,7 +318,7 @@ describe("Shohin systemd scope controller", () => {
         "WAI_RUN_ID=run005",
         watchdogPath,
         "--scope-id",
-        "shohin-shohin-phase-0-spike-run005.scope",
+        scopeId,
         "--",
         "/bin/sleep",
         "2",
@@ -311,167 +401,236 @@ describe("Shohin systemd scope controller", () => {
     ).rejects.toMatchObject({ code: "forbidden_executor_environment" });
   });
 
-  it("revalidates Id and PID start time before TERM and bounded KILL", async () => {
-    const { clock, command, controller, process } = makeFixture();
-    command.execOutputs = [
-      {
-        status: 0,
-        stdout:
-          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=77\nControlGroup=/user.slice/app.scope\nSubState=running\n",
-        stderr: "",
+  it("refuses malformed or inaccessible launcher identity without unit fallback", async () => {
+    for (const setup of [
+      (fixture: ReturnType<typeof makeFixture>) => {
+        fixture.filesystem.files.set("/proc/4242/stat", "malformed stat\n");
       },
-    ];
-    process.running.set(4242, true);
-
-    await controller.cancel(
-      {
-        controlEnv: baseLaunchOptions().controlEnv,
-        controlPid: 4242,
-        controlStartTime: "998877",
-        scopeId: "shohin-shohin-phase-0-spike-run005.scope",
+      (fixture: ReturnType<typeof makeFixture>) => {
+        fixture.filesystem.errors.set(
+          "/proc/4242/stat",
+          Object.assign(new Error("permission denied"), { code: "EACCES" }),
+        );
       },
-      { killAfterMs: 20, pollIntervalMs: 10 },
-    );
+      (fixture: ReturnType<typeof makeFixture>) => {
+        fixture.filesystem.errors.set(
+          "/proc/4242/stat",
+          Object.assign(new Error("transient read failure"), { code: "EIO" }),
+        );
+      },
+    ]) {
+      const fixture = makeFixture();
+      setup(fixture);
+      fixture.command.execOutputs = [successOutput(runningIdentity())];
 
-    expect(command.execs[0].argv).toEqual([
-      "--user",
-      "show",
-      "shohin-shohin-phase-0-spike-run005.scope",
-      "--property=Id",
-      "--property=MainPID",
-      "--property=ControlGroup",
-      "--property=SubState",
-      "--property=LoadState",
-      "--no-pager",
-    ]);
-    expect(process.signals).toEqual([
-      { pid: 4242, signal: "SIGTERM" },
-      { pid: 4242, signal: "SIGKILL" },
-    ]);
-    expect(clock.sleeps).toEqual([10, 10]);
+      await expect(
+        fixture.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+      ).rejects.toMatchObject({ code: expect.stringMatching(/^process_identity_/) });
+
+      expect(fixture.process.signals).toEqual([]);
+      expect(fixture.command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+    }
   });
 
-  it("uses verified systemctl unit kill when the control pid has exited", async () => {
+  it("uses verified unit TERM for known missing launcher identity and waits for scope stop", async () => {
     const { clock, command, controller, filesystem, process } = makeFixture();
     filesystem.files.delete("/proc/4242/stat");
     command.execOutputs = [
-      {
-        status: 0,
-        stdout:
-          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=77\nControlGroup=/user.slice/app.scope\nSubState=running\nLoadState=loaded\n",
-        stderr: "",
-      },
+      successOutput(runningIdentity()),
       { status: 0, stdout: "", stderr: "" },
-      {
-        status: 0,
-        stdout:
-          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=77\nControlGroup=/user.slice/app.scope\nSubState=running\nLoadState=loaded\n",
-        stderr: "",
-      },
-      {
-        status: 0,
-        stdout:
-          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=0\nSubState=dead\nLoadState=not-found\n",
-        stderr: "",
-      },
+      successOutput(runningIdentity()),
+      successOutput(stoppedIdentity()),
     ];
 
     await expect(
-      controller.cancel(
-        {
-          controlEnv: baseLaunchOptions().controlEnv,
-          controlPid: 4242,
-          controlStartTime: "998877",
-          scopeId: "shohin-shohin-phase-0-spike-run005.scope",
-        },
-        { killAfterMs: 20, pollIntervalMs: 10 },
-      ),
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
     ).resolves.toEqual({ sentKill: false, sentTerm: true });
 
     expect(command.execs.map((entry) => entry.argv)).toEqual([
-      [
-        "--user",
-        "show",
-        "shohin-shohin-phase-0-spike-run005.scope",
-        "--property=Id",
-        "--property=MainPID",
-        "--property=ControlGroup",
-        "--property=SubState",
-        "--property=LoadState",
-        "--no-pager",
-      ],
-      [
-        "--user",
-        "kill",
-        "--kill-whom=all",
-        "--signal=SIGTERM",
-        "shohin-shohin-phase-0-spike-run005.scope",
-      ],
-      [
-        "--user",
-        "show",
-        "shohin-shohin-phase-0-spike-run005.scope",
-        "--property=Id",
-        "--property=MainPID",
-        "--property=ControlGroup",
-        "--property=SubState",
-        "--property=LoadState",
-        "--no-pager",
-      ],
-      [
-        "--user",
-        "show",
-        "shohin-shohin-phase-0-spike-run005.scope",
-        "--property=Id",
-        "--property=MainPID",
-        "--property=ControlGroup",
-        "--property=SubState",
-        "--property=LoadState",
-        "--no-pager",
-      ],
+      showArgs(),
+      unitSignalArgs("SIGTERM"),
+      showArgs(),
+      showArgs(),
     ]);
     expect(process.signals).toEqual([]);
     expect(clock.sleeps).toEqual([10]);
   });
 
-  it("rejects Id mismatch or reused PID start time before signaling", async () => {
-    const mismatch = makeFixture();
-    mismatch.command.execOutputs = [
-      {
-        status: 0,
-        stdout: "Id=other.scope\nMainPID=77\nControlGroup=/wrong\n",
-        stderr: "",
-      },
-    ];
-    await expect(
-      mismatch.controller.cancel({
-        controlEnv: baseLaunchOptions().controlEnv,
-        controlPid: 4242,
-        controlStartTime: "998877",
-        scopeId: "shohin-shohin-phase-0-spike-run005.scope",
-      }),
-    ).rejects.toMatchObject({ code: "scope_id_mismatch" });
-    expect(mismatch.process.signals).toEqual([]);
+  it("refuses reused PID start time before signaling", async () => {
+    const { command, controller, filesystem, process } = makeFixture();
+    command.execOutputs = [successOutput(runningIdentity())];
+    filesystem.files.set("/proc/4242/stat", makeProcStat(4242, "111"));
 
-    const reusedPid = makeFixture();
-    reusedPid.command.execOutputs = [
-      {
-        status: 0,
-        stdout:
-          "Id=shohin-shohin-phase-0-spike-run005.scope\nMainPID=77\nControlGroup=/user.slice/app.scope\n",
-        stderr: "",
-      },
-    ];
-    reusedPid.filesystem.files.set("/proc/4242/stat", makeProcStat(4242, "111"));
     await expect(
-      reusedPid.controller.cancel({
-        controlEnv: baseLaunchOptions().controlEnv,
-        controlPid: 4242,
-        controlStartTime: "998877",
-        scopeId: "shohin-shohin-phase-0-spike-run005.scope",
-      }),
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
     ).rejects.toMatchObject({ code: "process_identity_mismatch" });
-    expect(reusedPid.process.signals).toEqual([]);
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+  });
+
+  it("refuses changed or unverifiable live unit generation before signaling", async () => {
+    const changed = makeFixture();
+    changed.command.execOutputs = [
+      successOutput(runningIdentity({ invocationId: "fedcba9876543210fedcba9876543210" })),
+    ];
+    await expect(
+      changed.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_identity_mismatch" });
+    expect(changed.process.signals).toEqual([]);
+    expect(changed.command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+
+    const unverifiable = makeFixture();
+    unverifiable.command.execOutputs = [
+      successOutput(runningIdentity({ invocationId: undefined })),
+    ];
+    await expect(
+      unverifiable.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_identity_unverified" });
+    expect(unverifiable.process.signals).toEqual([]);
+    expect(unverifiable.command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+  });
+
+  it("treats an already stopped or collected scope as a stable no-op", async () => {
+    const { command, controller, process } = makeFixture();
+    command.execOutputs = [successOutput(stoppedIdentity())];
+
+    await expect(
+      controller.cancel(cancelHandle({ identity: undefined }), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).resolves.toEqual({ sentKill: false, sentTerm: false });
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+  });
+
+  it("does not treat launcher exit as whole-scope stop", async () => {
+    const { clock, command, controller, process } = makeFixture();
+    process.running.set(4242, false);
+    command.execOutputs = [
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      { status: 0, stdout: "", stderr: "" },
+      successOutput(stoppedIdentity()),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).resolves.toEqual({ sentKill: true, sentTerm: true });
+
+    expect(process.signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      showArgs(),
+      showArgs(),
+      showArgs(),
+      showArgs(),
+      unitSignalArgs("SIGKILL"),
+      showArgs(),
+    ]);
+    expect(clock.sleeps).toEqual([10, 10]);
+  });
+
+  it("revalidates scope and launcher identity before KILL escalation", async () => {
+    const changedScope = makeFixture();
+    changedScope.process.running.set(4242, true);
+    changedScope.command.execOutputs = [
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity({ invocationId: "fedcba9876543210fedcba9876543210" })),
+    ];
+
+    await expect(
+      changedScope.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_identity_mismatch" });
+    expect(changedScope.command.execs.map((entry) => entry.argv)).toEqual([
+      showArgs(),
+      showArgs(),
+      showArgs(),
+      showArgs(),
+    ]);
+    expect(changedScope.process.signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+
+    const changedPid = makeFixture();
+    changedPid.process.running.set(4242, true);
+    changedPid.command.execOutputs = [
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+    ];
+    changedPid.filesystem.reads.set("/proc/4242/stat", [
+      makeProcStat(4242, "998877"),
+      makeProcStat(4242, "111"),
+    ]);
+    await expect(
+      changedPid.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "process_identity_mismatch" });
+    expect(changedPid.process.signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+    expect(changedPid.command.execs.map((entry) => entry.argv)).toEqual([
+      showArgs(),
+      showArgs(),
+      showArgs(),
+      showArgs(),
+    ]);
+  });
+
+  it("fails instead of reporting canceled when scope remains after KILL", async () => {
+    const { command, controller, filesystem, process } = makeFixture();
+    filesystem.files.delete("/proc/4242/stat");
+    command.execOutputs = [
+      successOutput(runningIdentity()),
+      { status: 0, stdout: "", stderr: "" },
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+      { status: 0, stdout: "", stderr: "" },
+      successOutput(runningIdentity()),
+      successOutput(runningIdentity()),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_stop_timeout" });
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      showArgs(),
+      unitSignalArgs("SIGTERM"),
+      showArgs(),
+      showArgs(),
+      showArgs(),
+      unitSignalArgs("SIGKILL"),
+      showArgs(),
+      showArgs(),
+    ]);
+  });
+
+  it("makes repeated cancellation of a stopped scope a no-op without extra signals", async () => {
+    const { command, controller, filesystem, process } = makeFixture();
+    filesystem.files.delete("/proc/4242/stat");
+    command.execOutputs = [
+      successOutput(runningIdentity()),
+      { status: 0, stdout: "", stderr: "" },
+      successOutput(stoppedIdentity()),
+      successOutput(stoppedIdentity()),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).resolves.toEqual({ sentKill: false, sentTerm: true });
+    await expect(
+      controller.cancel(cancelHandle({ identity: undefined }), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).resolves.toEqual({ sentKill: false, sentTerm: false });
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      showArgs(),
+      unitSignalArgs("SIGTERM"),
+      showArgs(),
+      showArgs(),
+    ]);
   });
 });
 

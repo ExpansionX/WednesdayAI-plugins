@@ -34,6 +34,8 @@ import {
 } from "./environment.js";
 import {
   createScopeController,
+  scopeIdentityIsRunning,
+  verifyScopeIdentityBinding,
   type ScopeCancelHandle,
   type ScopeCancelResult,
   type ScopeController,
@@ -457,6 +459,7 @@ export class SpikeSupervisor {
   private readonly activeTopics = new Set<string>();
   private readonly clock: SpikeSupervisorClock;
   private readonly executables: ExecutableResolver;
+  private readonly cancelRequests = new Map<string, Promise<SpikeCancelResult>>();
   private readonly identity: SpikeIdentityAdapter;
   private readonly runRoots = new Map<string, string>();
   private readonly scope: ScopeController;
@@ -695,7 +698,10 @@ export class SpikeSupervisor {
         }
         const controlEnv = readRecordedControlEnvironment(record);
         await this.identity.verifyActiveRunIdentity(record);
-        await this.scope.inspect(record.scope.scopeId, controlEnv);
+        const scopeIdentity = await this.scope.inspect(record.scope.scopeId, controlEnv);
+        if (scopeIdentityIsRunning(scopeIdentity)) {
+          verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+        }
         const updated = {
           ...record,
           heartbeat: this.refreshHeartbeat(record.runDir),
@@ -736,6 +742,26 @@ export class SpikeSupervisor {
 
   public async cancel(runId: string, runRootInput?: string): Promise<SpikeCancelResult> {
     const runRoot = this.resolveRunRoot(runId, runRootInput);
+    const key = `${runRoot}\0${runId}`;
+    const existing = this.cancelRequests.get(key);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const request = this.cancelActiveRun(runId, runRoot);
+    this.cancelRequests.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (this.cancelRequests.get(key) === request) {
+        this.cancelRequests.delete(key);
+      }
+    }
+  }
+
+  private async cancelActiveRun(
+    runId: string,
+    runRoot: string,
+  ): Promise<SpikeCancelResult> {
     const record = this.readRecord(runRoot, runId);
     if (record.status !== "active" || record.scope === undefined) {
       return { alreadyStopped: true, runId };
@@ -745,17 +771,25 @@ export class SpikeSupervisor {
       controlEnv,
       controlPid: record.scope.controlPid,
       controlStartTime: record.scope.controlStartTime,
+      identity: record.scope.identity,
       scopeId: record.scope.scopeId,
     };
     const result = await this.scope.cancel(handle);
+    const alreadyStopped = !result.sentKill && !result.sentTerm;
     this.activeTopics.delete(record.topic);
     this.writeRecord({
       ...record,
       status: "canceled",
       updatedAt: this.clock.nowIso(),
-      journal: appendJournal(record, this.clock, "cancel_requested"),
+      journal: appendJournal(
+        record,
+        this.clock,
+        alreadyStopped ? "cancel_already_stopped" : "cancel_requested",
+      ),
     });
-    return { alreadyStopped: false, result, runId };
+    return alreadyStopped
+      ? { alreadyStopped: true, runId }
+      : { alreadyStopped: false, result, runId };
   }
 
   public async recordRunnerExit(

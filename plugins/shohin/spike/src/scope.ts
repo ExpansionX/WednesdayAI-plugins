@@ -13,8 +13,12 @@ export type ScopeErrorCode =
   | "invalid_scope_option"
   | "invalid_scope_id"
   | "process_identity_mismatch"
+  | "process_identity_unavailable"
   | "probe_option_requires_probe_mode"
   | "scope_id_mismatch"
+  | "scope_identity_mismatch"
+  | "scope_identity_unverified"
+  | "scope_stop_timeout"
   | "strace_unavailable";
 
 export class ScopeControllerError extends Error {
@@ -102,6 +106,7 @@ export interface ScopeCancelHandle {
   readonly controlEnv: Readonly<Record<string, string>>;
   readonly controlPid: number;
   readonly controlStartTime: string;
+  readonly identity?: ScopeIdentity;
   readonly scopeId: string;
 }
 
@@ -124,6 +129,7 @@ export interface ScopeCancelResult {
 export interface ScopeIdentity {
   readonly controlGroup?: string;
   readonly id: string;
+  readonly invocationId?: string;
   readonly loadState?: string;
   readonly mainPid?: number;
   readonly subState?: string;
@@ -335,14 +341,22 @@ export const readProcessStartTime = (
   pid: number,
 ): string => parseProcStatStartTime(filesystem.readTextFile(`/proc/${pid}/stat`));
 
-const readProcessStartTimeIfAvailable = (
+type ProcessIdentityRead =
+  | { readonly kind: "absent" }
+  | { readonly kind: "error"; readonly error: unknown }
+  | { readonly kind: "present"; readonly startTime: string };
+
+const readProcessStartTimeForCancel = (
   filesystem: ScopeFilesystem,
   pid: number,
-): string | undefined => {
+): ProcessIdentityRead => {
   try {
-    return readProcessStartTime(filesystem, pid);
-  } catch {
-    return undefined;
+    return { kind: "present", startTime: readProcessStartTime(filesystem, pid) };
+  } catch (error) {
+    if (isKnownMissingProcessError(error)) {
+      return { kind: "absent" };
+    }
+    return { kind: "error", error };
   }
 };
 
@@ -392,7 +406,6 @@ export const createScopeController = ({
   ): Promise<ScopeCancelResult> => {
     assertScopeId(handle.scopeId);
     const controlEnv = assertControlEnvironment(handle.controlEnv);
-    await inspectScope(handle.scopeId, controlEnv, command, systemctlCommand);
     const killAfterMs = validateIntegerRange(
       options.killAfterMs ?? defaultCancelKillAfterMs,
       "cancel killAfterMs",
@@ -406,50 +419,86 @@ export const createScopeController = ({
       killAfterMs,
     );
 
-    const currentStartTime = readProcessStartTimeIfAvailable(filesystem, handle.controlPid);
-    if (currentStartTime !== undefined) {
-      if (currentStartTime !== handle.controlStartTime) {
-        throw new ScopeControllerError(
-          "process_identity_mismatch",
-          `Refusing to signal PID ${handle.controlPid}: start time changed`,
-        );
-      }
-      processAdapter.signal(handle.controlPid, "SIGTERM");
-      let elapsedMs = 0;
-      while (elapsedMs < killAfterMs) {
-        if (!processAdapter.isRunning(handle.controlPid)) {
-          return { sentKill: false, sentTerm: true };
-        }
-        const sleepMs = Math.min(pollIntervalMs, killAfterMs - elapsedMs);
-        await clock.sleep(sleepMs);
-        elapsedMs += sleepMs;
-      }
+    const initialIdentity = await inspectScope(
+      handle.scopeId,
+      controlEnv,
+      command,
+      systemctlCommand,
+    );
+    if (!scopeIdentityIsRunning(initialIdentity)) {
+      return { sentKill: false, sentTerm: false };
+    }
+    verifyScopeIdentityBinding(handle.scopeId, initialIdentity, handle.identity);
 
-      if (processAdapter.isRunning(handle.controlPid)) {
-        processAdapter.signal(handle.controlPid, "SIGKILL");
-        return { sentKill: true, sentTerm: true };
+    const launcherPresent = verifyProcessIdentityForCancel(
+      filesystem,
+      handle.controlPid,
+      handle.controlStartTime,
+    );
+    if (launcherPresent) {
+      try {
+        processAdapter.signal(handle.controlPid, "SIGTERM");
+      } catch (error) {
+        if (!isKnownMissingProcessError(error)) {
+          throw processIdentityUnavailable(handle.controlPid, error);
+        }
+        await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, command, systemctlCommand);
       }
+    } else {
+      await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, command, systemctlCommand);
+    }
+
+    if (
+      await waitForStoppedScope({
+        clock,
+        command,
+        controlEnv,
+        killAfterMs,
+        pollIntervalMs,
+        recordedIdentity: handle.identity,
+        scopeId: handle.scopeId,
+        systemctlCommand,
+      })
+    ) {
       return { sentKill: false, sentTerm: true };
     }
 
-    await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, command, systemctlCommand);
-    let elapsedMs = 0;
-    while (elapsedMs < killAfterMs) {
-      const identity = await inspectScope(handle.scopeId, controlEnv, command, systemctlCommand);
-      if (!scopeIsRunning(identity)) {
-        return { sentKill: false, sentTerm: true };
-      }
-      const sleepMs = Math.min(pollIntervalMs, killAfterMs - elapsedMs);
-      await clock.sleep(sleepMs);
-      elapsedMs += sleepMs;
+    const escalationIdentity = await inspectScope(
+      handle.scopeId,
+      controlEnv,
+      command,
+      systemctlCommand,
+    );
+    if (!scopeIdentityIsRunning(escalationIdentity)) {
+      return { sentKill: false, sentTerm: true };
     }
+    verifyScopeIdentityBinding(handle.scopeId, escalationIdentity, handle.identity);
+    verifyProcessIdentityForEscalation(
+      filesystem,
+      handle.controlPid,
+      handle.controlStartTime,
+    );
+    await sendScopeSignal(handle.scopeId, "SIGKILL", controlEnv, command, systemctlCommand);
 
-    const finalIdentity = await inspectScope(handle.scopeId, controlEnv, command, systemctlCommand);
-    if (scopeIsRunning(finalIdentity)) {
-      await sendScopeSignal(handle.scopeId, "SIGKILL", controlEnv, command, systemctlCommand);
+    if (
+      await waitForStoppedScope({
+        clock,
+        command,
+        controlEnv,
+        killAfterMs,
+        pollIntervalMs,
+        recordedIdentity: handle.identity,
+        scopeId: handle.scopeId,
+        systemctlCommand,
+      })
+    ) {
       return { sentKill: true, sentTerm: true };
     }
-    return { sentKill: false, sentTerm: true };
+
+    throw new ScopeControllerError(
+      "scope_stop_timeout",
+      `Scope ${handle.scopeId} was still running after SIGKILL observation window`,
+    );
   };
 
   return { cancel, inspect, launch };
@@ -572,6 +621,80 @@ const buildLaunchSpec = async (
   };
 };
 
+const verifyProcessIdentityForCancel = (
+  filesystem: ScopeFilesystem,
+  pid: number,
+  expectedStartTime: string,
+): boolean => {
+  const current = readProcessStartTimeForCancel(filesystem, pid);
+  if (current.kind === "absent") {
+    return false;
+  }
+  if (current.kind === "error") {
+    throw processIdentityUnavailable(pid, current.error);
+  }
+  if (current.startTime !== expectedStartTime) {
+    throw new ScopeControllerError(
+      "process_identity_mismatch",
+      `Refusing to signal PID ${pid}: start time changed`,
+    );
+  }
+  return true;
+};
+
+const verifyProcessIdentityForEscalation = (
+  filesystem: ScopeFilesystem,
+  pid: number,
+  expectedStartTime: string,
+): void => {
+  const current = readProcessStartTimeForCancel(filesystem, pid);
+  if (current.kind === "absent") {
+    return;
+  }
+  if (current.kind === "error") {
+    throw processIdentityUnavailable(pid, current.error);
+  }
+  if (current.startTime !== expectedStartTime) {
+    throw new ScopeControllerError(
+      "process_identity_mismatch",
+      `Refusing to escalate PID ${pid}: start time changed`,
+    );
+  }
+};
+
+const waitForStoppedScope = async ({
+  clock,
+  command,
+  controlEnv,
+  killAfterMs,
+  pollIntervalMs,
+  recordedIdentity,
+  scopeId,
+  systemctlCommand,
+}: {
+  readonly clock: ScopeClock;
+  readonly command: CommandAdapter;
+  readonly controlEnv: Readonly<Record<string, string>>;
+  readonly killAfterMs: number;
+  readonly pollIntervalMs: number;
+  readonly recordedIdentity: ScopeIdentity | undefined;
+  readonly scopeId: string;
+  readonly systemctlCommand: string;
+}): Promise<boolean> => {
+  let elapsedMs = 0;
+  while (elapsedMs < killAfterMs) {
+    const identity = await inspectScope(scopeId, controlEnv, command, systemctlCommand);
+    if (!scopeIdentityIsRunning(identity)) {
+      return true;
+    }
+    verifyScopeIdentityBinding(scopeId, identity, recordedIdentity);
+    const sleepMs = Math.min(pollIntervalMs, killAfterMs - elapsedMs);
+    await clock.sleep(sleepMs);
+    elapsedMs += sleepMs;
+  }
+  return false;
+};
+
 const sendScopeSignal = async (
   scopeId: string,
   signal: ScopeSignal,
@@ -592,11 +715,64 @@ const sendScopeSignal = async (
   }
 };
 
-const scopeIsRunning = (identity: ScopeIdentity): boolean =>
+export const scopeIdentityIsRunning = (identity: ScopeIdentity): boolean =>
   identity.loadState !== "not-found" &&
   identity.subState !== "dead" &&
   identity.subState !== "failed" &&
   identity.subState !== "exited";
+
+export const verifyScopeIdentityBinding = (
+  scopeId: string,
+  current: ScopeIdentity,
+  recorded: ScopeIdentity | undefined,
+): void => {
+  assertScopeId(scopeId);
+  if (!scopeIdentityIsRunning(current)) {
+    return;
+  }
+  if (recorded === undefined) {
+    throw new ScopeControllerError(
+      "scope_identity_unverified",
+      `Refusing to signal ${scopeId}: missing recorded scope identity`,
+    );
+  }
+  if (recorded.id !== scopeId) {
+    throw new ScopeControllerError(
+      "scope_identity_mismatch",
+      `Recorded scope identity mismatch: expected ${scopeId}, got ${recorded.id}`,
+    );
+  }
+
+  const recordedInvocationId = trustedInvocationId(recorded.invocationId);
+  const currentInvocationId = trustedInvocationId(current.invocationId);
+  if (recordedInvocationId === undefined || currentInvocationId === undefined) {
+    throw new ScopeControllerError(
+      "scope_identity_unverified",
+      `Refusing to signal ${scopeId}: missing trustworthy systemd invocation identity`,
+    );
+  }
+  if (recordedInvocationId !== currentInvocationId) {
+    throw new ScopeControllerError(
+      "scope_identity_mismatch",
+      `Refusing to signal ${scopeId}: systemd invocation identity changed`,
+    );
+  }
+
+  const recordedControlGroup = trustedControlGroup(recorded.controlGroup);
+  const currentControlGroup = trustedControlGroup(current.controlGroup);
+  if (recordedControlGroup === undefined || currentControlGroup === undefined) {
+    throw new ScopeControllerError(
+      "scope_identity_unverified",
+      `Refusing to signal ${scopeId}: missing trustworthy cgroup identity`,
+    );
+  }
+  if (recordedControlGroup !== currentControlGroup) {
+    throw new ScopeControllerError(
+      "scope_identity_mismatch",
+      `Refusing to signal ${scopeId}: cgroup identity changed`,
+    );
+  }
+};
 
 const inspectScope = async (
   scopeId: string,
@@ -617,6 +793,7 @@ const inspectScope = async (
       "--property=ControlGroup",
       "--property=SubState",
       "--property=LoadState",
+      "--property=InvocationID",
       "--no-pager",
     ],
     { env: controlEnv },
@@ -639,6 +816,7 @@ const inspectScope = async (
   return {
     controlGroup: properties.ControlGroup,
     id: properties.Id,
+    invocationId: optionalNonEmptyProperty(properties.InvocationID),
     loadState: properties.LoadState,
     mainPid: parseOptionalPositiveInteger(properties.MainPID),
     subState: properties.SubState,
@@ -754,6 +932,34 @@ const parseSystemctlProperties = (stdout: string): Record<string, string> => {
     properties[line.slice(0, separator)] = line.slice(separator + 1);
   }
   return properties;
+};
+
+const optionalNonEmptyProperty = (value: string | undefined): string | undefined => {
+  if (value === undefined || value.length === 0 || value === "n/a") {
+    return undefined;
+  }
+  return value;
+};
+
+const trustedInvocationId = (value: string | undefined): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const compact = value.replace(/-/g, "").toLowerCase();
+  return /^[0-9a-f]{32}$/.test(compact) ? compact : undefined;
+};
+
+const trustedControlGroup = (value: string | undefined): string | undefined => {
+  if (
+    value === undefined ||
+    value.length === 0 ||
+    value.includes("\0") ||
+    !value.startsWith("/") ||
+    value.split("/").includes("..")
+  ) {
+    return undefined;
+  }
+  return value;
 };
 
 const parseOptionalPositiveInteger = (value: string | undefined): number | undefined => {
@@ -925,6 +1131,23 @@ const isCredentialEnvironmentName = (key: string): boolean => {
     upperKey.includes("AUTH")
   );
 };
+
+const isKnownMissingProcessError = (error: unknown): boolean =>
+  isNodeError(error) && (error.code === "ENOENT" || error.code === "ESRCH");
+
+const processIdentityUnavailable = (pid: number, error: unknown): ScopeControllerError => {
+  if (error instanceof ScopeControllerError) {
+    return error;
+  }
+  const reason = error instanceof Error ? error.message : String(error);
+  return new ScopeControllerError(
+    "process_identity_unavailable",
+    `Refusing to signal PID ${pid}: process identity unavailable: ${reason}`,
+  );
+};
+
+const isNodeError = (error: unknown): error is NodeJS.ErrnoException =>
+  error instanceof Error && "code" in error;
 
 const failClosedCgroup = (reason: string): ScopeControllerError =>
   new ScopeControllerError(

@@ -61,10 +61,14 @@ class FakeScopeController implements ScopeController {
   public identity: ScopeIdentity = {
     controlGroup: "/user.slice/app.slice/shohin.scope",
     id: "shohin-shohin-phase-0-spike-run007.scope",
+    invocationId: "0123456789abcdef0123456789abcdef",
+    loadState: "loaded",
     mainPid: 5151,
     subState: "running",
   };
   public cancelResult: ScopeCancelResult = { sentKill: false, sentTerm: true };
+  public cancelWait: Promise<void> | undefined;
+  public requireCancelIdentity = false;
 
   public async launch(options: ScopeLaunchOptions): Promise<ScopedRunHandle> {
     this.assertExpectedControlEnv(options.controlEnv);
@@ -91,7 +95,14 @@ class FakeScopeController implements ScopeController {
 
   public async cancel(handle: ScopeCancelHandle): Promise<ScopeCancelResult> {
     this.assertExpectedControlEnv(handle.controlEnv);
+    if (this.requireCancelIdentity) {
+      expect(handle.identity).toMatchObject({
+        controlGroup: "/user.slice/app.slice/shohin.scope",
+        invocationId: "0123456789abcdef0123456789abcdef",
+      });
+    }
     this.cancels.push({ ...handle, controlEnv: { ...handle.controlEnv } });
+    await this.cancelWait;
     return this.cancelResult;
   }
 
@@ -438,6 +449,10 @@ describe("SpikeSupervisor", () => {
     expect(record.scope).toMatchObject({
       controlPid: 4242,
       controlStartTime: "777",
+      identity: {
+        controlGroup: "/user.slice/app.slice/shohin.scope",
+        invocationId: "0123456789abcdef0123456789abcdef",
+      },
       scopeId: "shohin-shohin-phase-0-spike-run007.scope",
     });
     expect(record.heartbeat.path).toBe(path.join(runDir, "heartbeat.json"));
@@ -678,26 +693,61 @@ describe("SpikeSupervisor", () => {
     mkdirSync(path.join(root, "source-home"), { recursive: true });
     const fixture = makeSupervisor(root);
     const { scope, supervisor } = fixture;
+    scope.requireCancelIdentity = true;
     await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    const runRoot = path.join(root, "run-data");
+    const activeRecord = readRecord(runRoot);
 
     const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
-    await expect(
-      restartedSupervisor.cancel("run007", path.join(root, "run-data")),
-    ).resolves.toEqual({
+    await expect(restartedSupervisor.cancel("run007", runRoot)).resolves.toEqual({
       alreadyStopped: false,
       result: { sentKill: false, sentTerm: true },
       runId: "run007",
     });
-    await expect(
-      restartedSupervisor.cancel("run007", path.join(root, "run-data")),
-    ).resolves.toEqual({
+    await expect(restartedSupervisor.cancel("run007", runRoot)).resolves.toEqual({
       alreadyStopped: true,
       runId: "run007",
     });
     expect(scope.cancels).toHaveLength(1);
     expect(scope.cancels[0].controlEnv).toEqual(scope.expectedControlEnv);
+    expect(scope.cancels[0].identity).toEqual(activeRecord.scope!.identity);
     expect(scope.launches).toHaveLength(1);
-    expect(readRecord(path.join(root, "run-data")).status).toBe("canceled");
+    expect(readRecord(runRoot).status).toBe("canceled");
+  });
+
+  it("coalesces concurrent cancellation of the same active run", async () => {
+    const root = makeTempRoot("concurrent-cancel");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const { scope, supervisor } = fixture;
+    let releaseCancel!: () => void;
+    scope.cancelWait = new Promise<void>((resolve) => {
+      releaseCancel = resolve;
+    });
+    await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    const runRoot = path.join(root, "run-data");
+
+    const first = restartedSupervisor.cancel("run007", runRoot);
+    const second = restartedSupervisor.cancel("run007", runRoot);
+    await Promise.resolve();
+    expect(scope.cancels).toHaveLength(1);
+    releaseCancel();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      {
+        alreadyStopped: false,
+        result: { sentKill: false, sentTerm: true },
+        runId: "run007",
+      },
+      {
+        alreadyStopped: false,
+        result: { sentKill: false, sentTerm: true },
+        runId: "run007",
+      },
+    ]);
+    expect(scope.cancels).toHaveLength(1);
+    expect(readRecord(runRoot).status).toBe("canceled");
   });
 
   it("fails closed for legacy active records without a persisted control env", async () => {
