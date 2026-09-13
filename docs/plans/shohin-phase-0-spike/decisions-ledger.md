@@ -19,3 +19,14 @@ Plan accepted from submit envelope.
 - Backed up config/unit privately under `/home/david/.openclaw/backups/shohin-phase-0-spike/task001-20260913T084345Z` with directory mode 700 and file mode 600.
 - Reconciled only `session.storage` to SQLite primary at `/home/david/.openclaw/sessions.db` with `fallbackToJsonlOnError=false` and persisted `OPENCLAW_SKIP_CHANNELS=1` in a focused user-unit drop-in; validation preceded restart.
 - Verified active/enabled unit, loopback listeners on 127.0.0.1/[::1]:18789, HTTP 200 health, RPC health `ok:true`, selected unit properties, existing legacy session JSON preserved, and refreshed `.precheck.passed` at base `5be287d73394f9bee55e9de84e7d98111c9a981d`.
+
+
+## Task 002 scaffold verification — 2026-09-13
+- At commit `9b72af50a36c092d988adef4b63bda4af7faf96d`, the worker reports nested typecheck, `npm --prefix plugins/shohin/spike test -- package.test.ts` (5 tests), SDK import, and WAI task002 gate passed. The commit contains exactly six declared files; node_modules is ignored and no tracked lockfile was created. Final status contained only pre-existing untracked harness/helper files. Full evidence: Zenith mission-001 work-002 attempt. Independent harness validation remains pending.
+
+## Task 005 scope controller verification — 2026-09-13
+- Worker commit `3d15d47afc6eb55eebf82af5f4646067e317854c` passed scoped Vitest (9 tests), full nested suite (30 tests), typecheck, build, and WAI task005 gate. Root lint remains unavailable because oxlint is missing.
+- The worker exercised the emitted controller with a disposable sleep scope: observed loaded/running state and matching Id/ControlGroup, cancel sent TERM, wait returned 143, cleanup returned not-found/dead, and final shohin scope inventory was empty. This explicit probe disabled the watchdog; normal stale-heartbeat cgroup kill was fixture-tested, with later real death/cancel probes still required.
+- The live check found and fixed late wait-listener registration and signal-exit handling. No paid inner call occurred. Independent harness validation remains pending. Exact worker-observed launch argv follows; temporary paths are historical evidence.
+
+`systemd-run --user --scope --unit shohin-shohin-phase-0-spike-real2596929.scope --property RuntimeMaxSec=10s --property TimeoutStopSec=1s --property KillMode=mixed --property SendSIGKILL=yes --collect -- env -i PATH=/usr/bin:/bin HOME=/tmp/shohin-real-scope-cUd8VP/HOME TMPDIR=/tmp/shohin-real-scope-cUd8VP/tmp WAI_RUN_ID=real-scope-check /data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter/plugins/shohin/spike/scripts/watchdog.sh --scope-id shohin-shohin-phase-0-spike-real2596929.scope --run-dir /tmp/shohin-real-scope-cUd8VP --heartbeat /tmp/shohin-real-scope-cUd8VP/heartbeat --heartbeat-stale-ms 1000 --heartbeat-poll-ms 100 --probe-mode --disable-watchdog -- /bin/sleep 2`.
