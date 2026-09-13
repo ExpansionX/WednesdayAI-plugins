@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "workstream": "shohin-spike-target",
+  "decisions": [
+    {
+      "id": "D1",
+      "title": "Keep the target as two sequential tasks",
+      "options": [
+        {
+          "label": "Two sequential target tasks",
+          "chosen": true,
+          "consequence": "The manifest edit and manifest regression have separate commits, file sets, and gates."
+        },
+        {
+          "label": "Single combined target task",
+          "chosen": false,
+          "consequence": "A combined change would hide whether the runner preserves target task dependency and file boundaries."
+        }
+      ]
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "O1",
+      "criterion": "SC1",
+      "description": "A generic manifest validator could stay green while the target storage schema is absent.",
+      "countermeasure": "Use a dedicated plan fixture that reads only the Shohin manifest and exits nonzero unless the closed storage sqlitePath string schema is present."
+    },
+    {
+      "id": "O2",
+      "criterion": "SC2",
+      "description": "The regression task could accidentally include a product edit.",
+      "countermeasure": "Declare only `plugins/shohin/manifest.test.mjs` in task 002 and depend on task 001 for the manifest edit."
+    }
+  ],
+  "decision_points": [
+    {
+      "id": "DP1",
+      "trigger": "The target branch, worktree, common-dir identity, or red/green gate result does not match the recorded baseline before any target task executes.",
+      "halt_codes": [
+        "target_identity_mismatch",
+        "target_gate_not_red_green"
+      ]
+    }
+  ],
+  "assumptions": [],
+  "questions": [],
+  "no_decision_points_reason": ""
+}

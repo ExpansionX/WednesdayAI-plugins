@@ -1,0 +1,98 @@
+{
+  "schema_version": "1",
+  "kind": "spec",
+  "path": "docs/superpowers/specs/2026-09-13-shohin-spike-target.md",
+  "frontmatter": {
+    "doc_type": "spec",
+    "status": "active",
+    "workstream": "shohin-spike-target",
+    "change_kind": "behaviour",
+    "verify_cmd": "node --test plugins/shohin/manifest.test.mjs"
+  },
+  "title": "Shohin Spike Target",
+  "sections": {
+    "intent": "Prepare a tiny real WAI target that changes the existing Shohin manifest in one task and adds a focused manifest regression in the next task. The target exists only to exercise WAI's task decomposition, file boundaries, and deterministic gate behavior before paid probe dispatch is allowed.",
+    "users": "The immediate user is the Shohin Phase 0 spike operator. Later workers use the target branch as a controlled two-step repository change with visible red and green gate evidence.",
+    "constraints": "The target branch is disposable and must not be merged or pushed. The baseline stays before either target task. Task 001 may edit only the existing Shohin manifest, and task 002 may create only the manifest node:test file. No paid model dispatch is part of preparing this target.",
+    "out_of_scope": "The target does not implement durable Shohin product behavior beyond the planned manifest schema edit and planned regression file. It does not change WednesdayAI core, gateway configuration, production channels, or any runner script.",
+    "approach": "Use a linked worktree on the same git common directory. Freeze this active spec, submit a two-task plan, and precommit the task 001 targeted gate fixture as plan evidence. Leave the branch clean at the pre-task baseline for the later WAI execution probe.",
+    "design": "Task 001 updates `plugins/shohin/openclaw.plugin.json` so the manifest config schema declares `storage` as a closed object whose `sqlitePath` property is typed as a string.\nTask 002 creates `plugins/shohin/manifest.test.mjs` as a node:test module that parses the committed Shohin manifest and asserts the same closed `storage.sqlitePath` schema.",
+    "decisions": "D1: Use exactly two sequential target tasks: a manifest-only edit, then a manifest-test creation. This keeps the probe's dependency and file boundaries mechanically visible."
+  },
+  "user_stories": [
+    {
+      "id": "US1",
+      "text": "As the spike operator, I can see a targeted gate fail on the baseline manifest and succeed after the intended manifest-only edit."
+    },
+    {
+      "id": "US2",
+      "text": "As a maintainer, I can keep a small node:test regression that reads the Shohin manifest and checks the storage sqlitePath schema."
+    }
+  ],
+  "success_criteria": [
+    {
+      "id": "SC1",
+      "text": "A repo-root command running the precommitted targeted gate fixture exits nonzero on the baseline manifest and exits zero after only `plugins/shohin/openclaw.plugin.json` declares `configSchema.properties.storage` as a closed object with `sqlitePath` typed string.",
+      "parent": "US1"
+    },
+    {
+      "id": "SC2",
+      "text": "Task 002 creates `plugins/shohin/manifest.test.mjs` as a node:test module whose assertions inspect the committed Shohin manifest for the closed `storage.sqlitePath` string schema.",
+      "parent": "US2"
+    }
+  ],
+  "test_strategy": [
+    {
+      "id": "TS1",
+      "text": "Run the precommitted targeted gate fixture before and after the manifest-only edit and record the nonzero and zero exits."
+    },
+    {
+      "id": "TS2",
+      "text": "Run `node --test plugins/shohin/manifest.test.mjs` after task 002 creates it."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "title": "Keep the target as two sequential tasks",
+      "options": [
+        {
+          "label": "Two sequential target tasks",
+          "chosen": true,
+          "consequence": "The manifest edit and manifest regression have separate commits, file sets, and gates."
+        },
+        {
+          "label": "Single combined target task",
+          "chosen": false,
+          "consequence": "A combined change would hide whether the runner preserves target task dependency and file boundaries."
+        }
+      ]
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "O1",
+      "criterion": "SC1",
+      "description": "A generic manifest validator could stay green while the target storage schema is absent.",
+      "countermeasure": "Use a dedicated plan fixture that reads only the Shohin manifest and exits nonzero unless the closed storage sqlitePath string schema is present."
+    },
+    {
+      "id": "O2",
+      "criterion": "SC2",
+      "description": "The regression task could accidentally include a product edit.",
+      "countermeasure": "Declare only `plugins/shohin/manifest.test.mjs` in task 002 and depend on task 001 for the manifest edit."
+    }
+  ],
+  "decision_points": [
+    {
+      "id": "DP1",
+      "trigger": "The target branch, worktree, common-dir identity, or red/green gate result does not match the recorded baseline before any target task executes.",
+      "halt_codes": [
+        "target_identity_mismatch",
+        "target_gate_not_red_green"
+      ]
+    }
+  ],
+  "assumptions": [],
+  "questions": []
+}
