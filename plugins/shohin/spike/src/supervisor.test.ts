@@ -58,14 +58,8 @@ class FakeScopeController implements ScopeController {
     readonly scopeId: string;
   }> = [];
   public expectedControlEnv: Readonly<Record<string, string>> | undefined;
-  public identity: ScopeIdentity = {
-    controlGroup: "/user.slice/app.slice/shohin.scope",
-    id: "shohin-shohin-phase-0-spike-run007.scope",
-    invocationId: "0123456789abcdef0123456789abcdef",
-    loadState: "loaded",
-    mainPid: 5151,
-    subState: "running",
-  };
+  public identity: ScopeIdentity = activeScopeIdentity();
+  public cancelLeavesIdentity = false;
   public cancelResult: ScopeCancelResult = { sentKill: false, sentTerm: true };
   public cancelWait: Promise<void> | undefined;
   public requireCancelIdentity = false;
@@ -103,6 +97,9 @@ class FakeScopeController implements ScopeController {
     }
     this.cancels.push({ ...handle, controlEnv: { ...handle.controlEnv } });
     await this.cancelWait;
+    if (!this.cancelLeavesIdentity) {
+      this.identity = stoppedScopeIdentity();
+    }
     return this.cancelResult;
   }
 
@@ -245,6 +242,38 @@ const makePatch = (relativePath = "wai-dag-executors.sh"): ProbePatch => ({
     };
   },
 });
+
+const activeScopeIdentity = (): ScopeIdentity => ({
+  controlGroup: "/user.slice/app.slice/shohin.scope",
+  id: "shohin-shohin-phase-0-spike-run007.scope",
+  invocationId: "0123456789abcdef0123456789abcdef",
+  loadState: "loaded",
+  mainPid: 5151,
+  subState: "running",
+});
+
+const stoppedScopeIdentity = (): ScopeIdentity => ({
+  id: "shohin-shohin-phase-0-spike-run007.scope",
+  loadState: "not-found",
+  subState: "dead",
+});
+
+const unknownScopeIdentity = (): ScopeIdentity => ({
+  controlGroup: "/user.slice/app.slice/shohin.scope",
+  id: "shohin-shohin-phase-0-spike-run007.scope",
+  invocationId: "0123456789abcdef0123456789abcdef",
+});
+
+const populatedTerminalScopeIdentity = (): ScopeIdentity =>
+  ({
+    controlGroup: "/user.slice/app.slice/shohin.scope",
+    cgroupMembership: "populated",
+    id: "shohin-shohin-phase-0-spike-run007.scope",
+    invocationId: "0123456789abcdef0123456789abcdef",
+    loadState: "loaded",
+    mainPid: 0,
+    subState: "failed",
+  }) as ScopeIdentity;
 
 const makeSupervisor = (root: string) => {
   const clock = new FakeClock();
@@ -654,7 +683,9 @@ describe("SpikeSupervisor", () => {
     };
     const supervisor = new SpikeSupervisor(dependencies);
     await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    fixture.scope.identity = stoppedScopeIdentity();
     await supervisor.recordRunnerExit("run007", 0);
+    fixture.scope.identity = activeScopeIdentity();
     await supervisor.start(
       startOptions(root, {
         costOracle: makeOracle(1),
@@ -663,6 +694,7 @@ describe("SpikeSupervisor", () => {
       }),
     );
     await supervisor.writeRunStatus("run008", "unknown");
+    fixture.scope.identity = activeScopeIdentity();
     await supervisor.start(
       startOptions(root, {
         costOracle: makeOracle(1),
@@ -748,6 +780,49 @@ describe("SpikeSupervisor", () => {
     ]);
     expect(scope.cancels).toHaveLength(1);
     expect(readRecord(runRoot).status).toBe("canceled");
+  });
+
+  it("does not persist canceled when post-cancel scope state is unknown or populated", async () => {
+    const root = makeTempRoot("cancel-unknown-state");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const { scope, supervisor } = fixture;
+    await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    const runRoot = path.join(root, "run-data");
+
+    scope.cancelLeavesIdentity = true;
+    scope.identity = unknownScopeIdentity();
+    await expect(supervisor.cancel("run007", runRoot)).rejects.toMatchObject({
+      code: "scope_state_unknown",
+    });
+    expect(readRecord(runRoot).status).toBe("active");
+
+    scope.identity = populatedTerminalScopeIdentity();
+    await expect(supervisor.cancel("run007", runRoot)).rejects.toMatchObject({
+      code: "scope_not_stopped",
+    });
+    expect(readRecord(runRoot).status).toBe("active");
+  });
+
+  it("does not persist runner terminal status while the recorded scope is unknown or populated", async () => {
+    const root = makeTempRoot("exit-unknown-state");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const { scope, supervisor } = fixture;
+    await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    const runRoot = path.join(root, "run-data");
+
+    scope.identity = unknownScopeIdentity();
+    await expect(supervisor.recordRunnerExit("run007", 0, runRoot)).rejects.toMatchObject({
+      code: "scope_state_unknown",
+    });
+    expect(readRecord(runRoot).status).toBe("active");
+
+    scope.identity = populatedTerminalScopeIdentity();
+    await expect(supervisor.recordRunnerExit("run007", 0, runRoot)).rejects.toMatchObject({
+      code: "scope_not_stopped",
+    });
+    expect(readRecord(runRoot).status).toBe("active");
   });
 
   it("fails closed for legacy active records without a persisted control env", async () => {

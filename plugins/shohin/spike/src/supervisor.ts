@@ -81,7 +81,8 @@ export type SpikeSupervisorErrorCode =
   | "invalid_option"
   | "patch_not_closed"
   | "patch_unknown"
-  | "record_unavailable";
+  | "record_unavailable"
+  | "scope_not_stopped";
 
 export class SpikeSupervisorError extends Error {
   public constructor(
@@ -775,6 +776,7 @@ export class SpikeSupervisor {
       scopeId: record.scope.scopeId,
     };
     const result = await this.scope.cancel(handle);
+    await this.verifyScopeStoppedBeforeTerminalPersistence(record, controlEnv);
     const alreadyStopped = !result.sentKill && !result.sentTerm;
     this.activeTopics.delete(record.topic);
     this.writeRecord({
@@ -792,6 +794,24 @@ export class SpikeSupervisor {
       : { alreadyStopped: false, result, runId };
   }
 
+  private async verifyScopeStoppedBeforeTerminalPersistence(
+    record: SpikeSupervisorRecord,
+    controlEnv: Readonly<Record<string, string>>,
+  ): Promise<void> {
+    if (record.scope === undefined) {
+      return;
+    }
+    const scopeIdentity = await this.scope.inspect(record.scope.scopeId, controlEnv);
+    if (scopeIdentityIsRunning(scopeIdentity)) {
+      throw new SpikeSupervisorError(
+        "scope_not_stopped",
+        `Refusing to persist terminal status for ${record.runId}: scope ${record.scope.scopeId} still has live membership`,
+        { runId: record.runId, scopeId: record.scope.scopeId },
+      );
+    }
+    verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+  }
+
   public async recordRunnerExit(
     runId: string,
     exitStatus: number,
@@ -799,6 +819,18 @@ export class SpikeSupervisor {
   ): Promise<void> {
     const runRoot = this.resolveRunRoot(runId, runRootInput);
     const record = this.readRecord(runRoot, runId);
+    if (record.status === "active") {
+      if (record.scope === undefined) {
+        throw new SpikeSupervisorError(
+          "record_unavailable",
+          `Active run ${runId} is missing scope identity`,
+        );
+      }
+      await this.verifyScopeStoppedBeforeTerminalPersistence(
+        record,
+        readRecordedControlEnvironment(record),
+      );
+    }
     this.activeTopics.delete(record.topic);
     this.writeRecord({
       ...record,

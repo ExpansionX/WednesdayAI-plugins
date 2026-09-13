@@ -79,12 +79,14 @@ class FakeCommandAdapter implements CommandAdapter {
 class FakeFilesystem implements ScopeFilesystem {
   public readonly errors = new Map<string, unknown>();
   public readonly files = new Map<string, string>();
+  public readonly readLog: string[] = [];
   public readonly reads = new Map<string, unknown[]>();
   public readonly writable = new Set<string>();
   public readonly writes: Array<{ readonly filePath: string; readonly content: string }> =
     [];
 
   public readTextFile(filePath: string): string {
+    this.readLog.push(filePath);
     const readQueue = this.reads.get(filePath);
     if (readQueue !== undefined && readQueue.length > 0) {
       const next = readQueue.shift();
@@ -156,6 +158,10 @@ const makeProcStat = (pid: number, startTime: string): string =>
 const scopeId = "shohin-shohin-phase-0-spike-run005.scope";
 const invocationId = "0123456789abcdef0123456789abcdef";
 const controlGroup = "/user.slice/user-1000.slice/app.slice/shohin.scope";
+const cgroupEventsPath = (group = controlGroup) =>
+  path.join("/sys/fs/cgroup", group.slice(1), "cgroup.events");
+const cgroupProcsPath = (group = controlGroup) =>
+  path.join("/sys/fs/cgroup", group.slice(1), "cgroup.procs");
 
 const showArgs = () => [
   "--user",
@@ -432,6 +438,130 @@ describe("Shohin systemd scope controller", () => {
     }
   });
 
+  it("refuses missing, conflicting or unsupported scope states without signaling", async () => {
+    for (const identity of [
+      runningIdentity({ loadState: undefined }),
+      runningIdentity({ subState: undefined }),
+      runningIdentity({ subState: "maintenance" }),
+      runningIdentity({ subState: "exited" }),
+      runningIdentity({ loadState: "not-found", subState: "running" }),
+    ]) {
+      const fixture = makeFixture();
+      fixture.command.execOutputs = [successOutput(identity)];
+
+      await expect(
+        fixture.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+      ).rejects.toMatchObject({ code: "scope_state_unknown" });
+
+      expect(fixture.process.signals).toEqual([]);
+      expect(fixture.command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+      expect(fixture.filesystem.readLog).toEqual([]);
+    }
+  });
+
+  it("refuses malformed or inaccessible terminal cgroup membership without signaling", async () => {
+    for (const setup of [
+      (fixture: ReturnType<typeof makeFixture>) => {
+        fixture.filesystem.files.set(cgroupEventsPath(), "populated maybe\n");
+      },
+      (fixture: ReturnType<typeof makeFixture>) => {
+        fixture.filesystem.errors.set(
+          cgroupEventsPath(),
+          Object.assign(new Error("permission denied"), { code: "EACCES" }),
+        );
+      },
+    ]) {
+      const fixture = makeFixture();
+      setup(fixture);
+      fixture.command.execOutputs = [
+        successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+      ];
+
+      await expect(
+        fixture.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+      ).rejects.toMatchObject({ code: "scope_membership_unavailable" });
+
+      expect(fixture.process.signals).toEqual([]);
+      expect(fixture.command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+      expect(fixture.filesystem.readLog).toEqual([cgroupEventsPath()]);
+    }
+  });
+
+  it("does not complete failed or dead scopes while hierarchical cgroup membership is populated", async () => {
+    for (const subState of ["failed", "dead"]) {
+      const fixture = makeFixture();
+      fixture.filesystem.files.delete("/proc/4242/stat");
+      fixture.filesystem.files.set(cgroupEventsPath(), "populated 1\n");
+      fixture.command.execOutputs = [
+        successOutput(runningIdentity({ mainPid: 0, subState })),
+        { status: 0, stdout: "", stderr: "" },
+        successOutput(runningIdentity({ mainPid: 0, subState })),
+        successOutput(runningIdentity({ mainPid: 0, subState })),
+        successOutput(runningIdentity({ mainPid: 0, subState })),
+        { status: 0, stdout: "", stderr: "" },
+        successOutput(runningIdentity({ mainPid: 0, subState })),
+        successOutput(runningIdentity({ mainPid: 0, subState })),
+      ];
+
+      await expect(
+        fixture.controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+      ).rejects.toMatchObject({ code: "scope_stop_timeout" });
+
+      expect(fixture.process.signals).toEqual([]);
+      expect(fixture.command.execs.map((entry) => entry.argv)).toEqual([
+        showArgs(),
+        unitSignalArgs("SIGTERM"),
+        showArgs(),
+        showArgs(),
+        showArgs(),
+        unitSignalArgs("SIGKILL"),
+        showArgs(),
+        showArgs(),
+      ]);
+    }
+  });
+
+  it("honors nested-only cgroup.events population instead of root cgroup.procs emptiness", async () => {
+    const { command, controller, filesystem, process } = makeFixture();
+    filesystem.files.delete("/proc/4242/stat");
+    filesystem.files.set(cgroupEventsPath(), "populated 1\n");
+    filesystem.files.set(cgroupProcsPath(), "");
+    command.execOutputs = [
+      successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+      { status: 0, stdout: "", stderr: "" },
+      successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+      successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+      successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+      { status: 0, stdout: "", stderr: "" },
+      successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+      successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_stop_timeout" });
+
+    expect(process.signals).toEqual([]);
+    expect(filesystem.readLog).toContain(cgroupEventsPath());
+    expect(filesystem.readLog).not.toContain(cgroupProcsPath());
+  });
+
+  it("accepts empty terminal membership as a no-signal stopped scope", async () => {
+    const { command, controller, filesystem, process } = makeFixture();
+    filesystem.files.set(cgroupEventsPath(), "populated 0\nfrozen 0\n");
+    command.execOutputs = [
+      successOutput(runningIdentity({ mainPid: 0, subState: "failed" })),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).resolves.toEqual({ sentKill: false, sentTerm: false });
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+    expect(filesystem.readLog).toEqual([cgroupEventsPath()]);
+  });
+
   it("uses verified unit TERM for known missing launcher identity and waits for scope stop", async () => {
     const { clock, command, controller, filesystem, process } = makeFixture();
     filesystem.files.delete("/proc/4242/stat");
@@ -453,6 +583,7 @@ describe("Shohin systemd scope controller", () => {
       showArgs(),
     ]);
     expect(process.signals).toEqual([]);
+    expect(filesystem.readLog).toEqual(["/proc/4242/stat", cgroupEventsPath()]);
     expect(clock.sleeps).toEqual([10]);
   });
 
@@ -492,7 +623,7 @@ describe("Shohin systemd scope controller", () => {
   });
 
   it("treats an already stopped or collected scope as a stable no-op", async () => {
-    const { command, controller, process } = makeFixture();
+    const { command, controller, filesystem, process } = makeFixture();
     command.execOutputs = [successOutput(stoppedIdentity())];
 
     await expect(
@@ -501,6 +632,30 @@ describe("Shohin systemd scope controller", () => {
 
     expect(process.signals).toEqual([]);
     expect(command.execs.map((entry) => entry.argv)).toEqual([showArgs()]);
+    expect(filesystem.readLog).toEqual([]);
+  });
+
+  it("requires the recorded identity to survive terminal stop observation", async () => {
+    const { command, controller, filesystem, process } = makeFixture();
+    filesystem.files.set(cgroupEventsPath(), "populated 0\n");
+    process.running.set(4242, false);
+    command.execOutputs = [
+      successOutput(runningIdentity()),
+      successOutput(
+        runningIdentity({
+          invocationId: "fedcba9876543210fedcba9876543210",
+          mainPid: 0,
+          subState: "failed",
+        }),
+      ),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_identity_mismatch" });
+
+    expect(process.signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([showArgs(), showArgs()]);
   });
 
   it("does not treat launcher exit as whole-scope stop", async () => {

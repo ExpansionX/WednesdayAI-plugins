@@ -18,6 +18,8 @@ export type ScopeErrorCode =
   | "scope_id_mismatch"
   | "scope_identity_mismatch"
   | "scope_identity_unverified"
+  | "scope_membership_unavailable"
+  | "scope_state_unknown"
   | "scope_stop_timeout"
   | "strace_unavailable";
 
@@ -126,7 +128,11 @@ export interface ScopeCancelResult {
   readonly sentTerm: boolean;
 }
 
+export type ScopeCgroupMembership = "absent" | "empty" | "populated";
+
 export interface ScopeIdentity {
+  readonly cgroupEventsPath?: string;
+  readonly cgroupMembership?: ScopeCgroupMembership;
   readonly controlGroup?: string;
   readonly id: string;
   readonly invocationId?: string;
@@ -148,6 +154,7 @@ export interface ScopeController {
 }
 
 export interface ScopeControllerDependencies {
+  readonly cgroupRoot?: string;
   readonly clock?: ScopeClock;
   readonly command?: CommandAdapter;
   readonly envCommand?: string;
@@ -172,6 +179,14 @@ const controlEnvironmentOrder = [
   "DBUS_SESSION_BUS_ADDRESS",
 ] as const;
 const allowedControlEnvironment = new Set<string>(controlEnvironmentOrder);
+const activeScopeSubStates = new Set([
+  "abandoned",
+  "running",
+  "start-chown",
+  "stop-sigkill",
+  "stop-sigterm",
+]);
+const terminalScopeSubStates = new Set(["dead", "failed"]);
 const defaultCancelKillAfterMs = 2_000;
 const defaultCancelPollIntervalMs = 50;
 const maxRuntimeMaxSec = 30 * 60;
@@ -361,6 +376,7 @@ const readProcessStartTimeForCancel = (
 };
 
 export const createScopeController = ({
+  cgroupRoot = "/sys/fs/cgroup",
   clock = nodeClock,
   command = nodeCommandAdapter,
   envCommand = "env",
@@ -370,6 +386,8 @@ export const createScopeController = ({
   systemdRunCommand = "systemd-run",
   watchdogPath = path.resolve(import.meta.dirname, "..", "scripts", "watchdog.sh"),
 }: ScopeControllerDependencies = {}): ScopeController => {
+  const trustedCgroupRoot = validateAbsoluteNormalizedPath(cgroupRoot, "cgroup root");
+
   const launch = async (
     options: ScopeLaunchOptions,
   ): Promise<ScopedRunHandle> => {
@@ -398,7 +416,15 @@ export const createScopeController = ({
   const inspect = async (
     scopeId: string,
     controlEnv: Readonly<Record<string, string>>,
-  ): Promise<ScopeIdentity> => inspectScope(scopeId, controlEnv, command, systemctlCommand);
+  ): Promise<ScopeIdentity> =>
+    inspectScope(
+      scopeId,
+      controlEnv,
+      command,
+      systemctlCommand,
+      filesystem,
+      trustedCgroupRoot,
+    );
 
   const cancel = async (
     handle: ScopeCancelHandle,
@@ -424,8 +450,18 @@ export const createScopeController = ({
       controlEnv,
       command,
       systemctlCommand,
+      filesystem,
+      trustedCgroupRoot,
     );
-    if (!scopeIdentityIsRunning(initialIdentity)) {
+    if (
+      scopeIdentityIsStopped(
+        handle.scopeId,
+        initialIdentity,
+        handle.identity,
+        filesystem,
+        trustedCgroupRoot,
+      )
+    ) {
       return { sentKill: false, sentTerm: false };
     }
     verifyScopeIdentityBinding(handle.scopeId, initialIdentity, handle.identity);
@@ -455,6 +491,8 @@ export const createScopeController = ({
         controlEnv,
         killAfterMs,
         pollIntervalMs,
+        cgroupRoot: trustedCgroupRoot,
+        filesystem,
         recordedIdentity: handle.identity,
         scopeId: handle.scopeId,
         systemctlCommand,
@@ -468,8 +506,18 @@ export const createScopeController = ({
       controlEnv,
       command,
       systemctlCommand,
+      filesystem,
+      trustedCgroupRoot,
     );
-    if (!scopeIdentityIsRunning(escalationIdentity)) {
+    if (
+      scopeIdentityIsStopped(
+        handle.scopeId,
+        escalationIdentity,
+        handle.identity,
+        filesystem,
+        trustedCgroupRoot,
+      )
+    ) {
       return { sentKill: false, sentTerm: true };
     }
     verifyScopeIdentityBinding(handle.scopeId, escalationIdentity, handle.identity);
@@ -487,6 +535,8 @@ export const createScopeController = ({
         controlEnv,
         killAfterMs,
         pollIntervalMs,
+        cgroupRoot: trustedCgroupRoot,
+        filesystem,
         recordedIdentity: handle.identity,
         scopeId: handle.scopeId,
         systemctlCommand,
@@ -663,18 +713,22 @@ const verifyProcessIdentityForEscalation = (
 };
 
 const waitForStoppedScope = async ({
+  cgroupRoot,
   clock,
   command,
   controlEnv,
+  filesystem,
   killAfterMs,
   pollIntervalMs,
   recordedIdentity,
   scopeId,
   systemctlCommand,
 }: {
+  readonly cgroupRoot: string;
   readonly clock: ScopeClock;
   readonly command: CommandAdapter;
   readonly controlEnv: Readonly<Record<string, string>>;
+  readonly filesystem: ScopeFilesystem;
   readonly killAfterMs: number;
   readonly pollIntervalMs: number;
   readonly recordedIdentity: ScopeIdentity | undefined;
@@ -683,8 +737,15 @@ const waitForStoppedScope = async ({
 }): Promise<boolean> => {
   let elapsedMs = 0;
   while (elapsedMs < killAfterMs) {
-    const identity = await inspectScope(scopeId, controlEnv, command, systemctlCommand);
-    if (!scopeIdentityIsRunning(identity)) {
+    const identity = await inspectScope(
+      scopeId,
+      controlEnv,
+      command,
+      systemctlCommand,
+      filesystem,
+      cgroupRoot,
+    );
+    if (scopeIdentityIsStopped(scopeId, identity, recordedIdentity, filesystem, cgroupRoot)) {
       return true;
     }
     verifyScopeIdentityBinding(scopeId, identity, recordedIdentity);
@@ -693,6 +754,38 @@ const waitForStoppedScope = async ({
     elapsedMs += sleepMs;
   }
   return false;
+};
+
+const scopeIdentityIsStopped = (
+  scopeId: string,
+  identity: ScopeIdentity,
+  recordedIdentity: ScopeIdentity | undefined,
+  filesystem: ScopeFilesystem,
+  cgroupRoot: string,
+): boolean => {
+  const labels = classifyScopeLabels(identity);
+  if (labels === "active") {
+    return false;
+  }
+  if (labels === "terminal") {
+    if (terminalScopeMembership(identity) === "populated") {
+      return false;
+    }
+    verifyScopeIdentityBinding(scopeId, identity, recordedIdentity);
+    return true;
+  }
+
+  if (recordedIdentity !== undefined && recordedIdentity.id !== scopeId) {
+    throw new ScopeControllerError(
+      "scope_identity_mismatch",
+      `Recorded scope identity mismatch: expected ${scopeId}, got ${recordedIdentity.id}`,
+    );
+  }
+  const recordedControlGroup = trustedControlGroup(recordedIdentity?.controlGroup);
+  if (recordedControlGroup === undefined) {
+    return true;
+  }
+  return readCgroupMembership(filesystem, recordedControlGroup, cgroupRoot).kind !== "populated";
 };
 
 const sendScopeSignal = async (
@@ -715,11 +808,16 @@ const sendScopeSignal = async (
   }
 };
 
-export const scopeIdentityIsRunning = (identity: ScopeIdentity): boolean =>
-  identity.loadState !== "not-found" &&
-  identity.subState !== "dead" &&
-  identity.subState !== "failed" &&
-  identity.subState !== "exited";
+export const scopeIdentityIsRunning = (identity: ScopeIdentity): boolean => {
+  const labels = classifyScopeLabels(identity);
+  if (labels === "active") {
+    return true;
+  }
+  if (labels === "collected") {
+    return false;
+  }
+  return terminalScopeMembership(identity) === "populated";
+};
 
 export const verifyScopeIdentityBinding = (
   scopeId: string,
@@ -727,7 +825,7 @@ export const verifyScopeIdentityBinding = (
   recorded: ScopeIdentity | undefined,
 ): void => {
   assertScopeId(scopeId);
-  if (!scopeIdentityIsRunning(current)) {
+  if (classifyScopeLabels(current) === "collected") {
     return;
   }
   if (recorded === undefined) {
@@ -774,11 +872,137 @@ export const verifyScopeIdentityBinding = (
   }
 };
 
+type ScopeLabelClassification = "active" | "collected" | "terminal";
+
+const classifyScopeLabels = (identity: ScopeIdentity): ScopeLabelClassification => {
+  const loadState = stateProperty(identity.loadState);
+  const subState = stateProperty(identity.subState);
+  if (loadState === undefined || subState === undefined) {
+    throw scopeStateUnknown(identity, "missing LoadState or SubState");
+  }
+  if (loadState === "not-found") {
+    if (
+      subState === "dead" &&
+      identity.mainPid === undefined &&
+      trustedControlGroup(identity.controlGroup) === undefined &&
+      trustedInvocationId(identity.invocationId) === undefined
+    ) {
+      return "collected";
+    }
+    throw scopeStateUnknown(identity, "conflicting not-found scope properties");
+  }
+  if (loadState !== "loaded") {
+    throw scopeStateUnknown(identity, `unsupported LoadState=${loadState}`);
+  }
+  if (activeScopeSubStates.has(subState)) {
+    return "active";
+  }
+  if (terminalScopeSubStates.has(subState)) {
+    return "terminal";
+  }
+  throw scopeStateUnknown(identity, `unsupported scope SubState=${subState}`);
+};
+
+const stateProperty = (value: string | undefined): string | undefined => {
+  if (value === undefined || value.length === 0) {
+    return undefined;
+  }
+  return value.toLowerCase();
+};
+
+const terminalScopeMembership = (identity: ScopeIdentity): ScopeCgroupMembership => {
+  if (
+    identity.cgroupMembership === "absent" ||
+    identity.cgroupMembership === "empty" ||
+    identity.cgroupMembership === "populated"
+  ) {
+    return identity.cgroupMembership;
+  }
+  throw new ScopeControllerError(
+    "scope_membership_unavailable",
+    `Scope ${identity.id} has terminal state without hierarchical cgroup membership proof`,
+  );
+};
+
+const scopeStateUnknown = (identity: ScopeIdentity, reason: string): ScopeControllerError =>
+  new ScopeControllerError(
+    "scope_state_unknown",
+    `Scope ${identity.id} state is unknown; refusing to infer cancellation safety: ${reason}`,
+  );
+
+interface CgroupMembershipObservation {
+  readonly eventsPath: string;
+  readonly kind: ScopeCgroupMembership;
+}
+
+const readCgroupMembership = (
+  filesystem: ScopeFilesystem,
+  controlGroup: string | undefined,
+  cgroupRoot: string,
+): CgroupMembershipObservation => {
+  const trustedGroup = trustedControlGroup(controlGroup);
+  if (trustedGroup === undefined) {
+    throw new ScopeControllerError(
+      "scope_membership_unavailable",
+      "Scope terminal state lacks a trustworthy cgroup path",
+    );
+  }
+  const eventsPath = path.join(cgroupRoot, trustedGroup.slice(1), "cgroup.events");
+  try {
+    return {
+      eventsPath,
+      kind: parseCgroupEvents(filesystem.readTextFile(eventsPath), eventsPath),
+    };
+  } catch (error) {
+    if (isKnownMissingProcessError(error)) {
+      return { eventsPath, kind: "absent" };
+    }
+    throw cgroupMembershipUnavailable(eventsPath, error);
+  }
+};
+
+const parseCgroupEvents = (content: string, eventsPath: string): ScopeCgroupMembership => {
+  let populated: boolean | undefined;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) {
+      continue;
+    }
+    const [key, value, extra] = line.split(/\s+/);
+    if (key !== "populated") {
+      continue;
+    }
+    if (extra !== undefined || (value !== "0" && value !== "1")) {
+      throw new ScopeControllerError(
+        "scope_membership_unavailable",
+        `Malformed cgroup.events populated entry at ${eventsPath}`,
+      );
+    }
+    const next = value === "1";
+    if (populated !== undefined && populated !== next) {
+      throw new ScopeControllerError(
+        "scope_membership_unavailable",
+        `Conflicting cgroup.events populated entries at ${eventsPath}`,
+      );
+    }
+    populated = next;
+  }
+  if (populated === undefined) {
+    throw new ScopeControllerError(
+      "scope_membership_unavailable",
+      `Missing cgroup.events populated entry at ${eventsPath}`,
+    );
+  }
+  return populated ? "populated" : "empty";
+};
+
 const inspectScope = async (
   scopeId: string,
   controlEnvInput: Readonly<Record<string, string>>,
   command: CommandAdapter,
   systemctlCommand: string,
+  filesystem: ScopeFilesystem,
+  cgroupRoot: string,
 ): Promise<ScopeIdentity> => {
   assertScopeId(scopeId);
   const controlEnv = assertControlEnvironment(controlEnvInput);
@@ -813,13 +1037,27 @@ const inspectScope = async (
     );
   }
 
-  return {
-    controlGroup: properties.ControlGroup,
+  const identity: ScopeIdentity = {
+    controlGroup: optionalNonEmptyProperty(properties.ControlGroup),
     id: properties.Id,
     invocationId: optionalNonEmptyProperty(properties.InvocationID),
-    loadState: properties.LoadState,
+    loadState: optionalNonEmptyProperty(properties.LoadState),
     mainPid: parseOptionalPositiveInteger(properties.MainPID),
-    subState: properties.SubState,
+    subState: optionalNonEmptyProperty(properties.SubState),
+  };
+  if (classifyScopeLabels(identity) !== "terminal") {
+    return identity;
+  }
+
+  const membership = readCgroupMembership(
+    filesystem,
+    identity.controlGroup,
+    cgroupRoot,
+  );
+  return {
+    ...identity,
+    cgroupEventsPath: membership.eventsPath,
+    cgroupMembership: membership.kind,
   };
 };
 
@@ -953,9 +1191,11 @@ const trustedControlGroup = (value: string | undefined): string | undefined => {
   if (
     value === undefined ||
     value.length === 0 ||
+    value === "/" ||
     value.includes("\0") ||
     !value.startsWith("/") ||
-    value.split("/").includes("..")
+    value.split("/").includes("..") ||
+    path.posix.normalize(value) !== value
   ) {
     return undefined;
   }
@@ -1143,6 +1383,20 @@ const processIdentityUnavailable = (pid: number, error: unknown): ScopeControlle
   return new ScopeControllerError(
     "process_identity_unavailable",
     `Refusing to signal PID ${pid}: process identity unavailable: ${reason}`,
+  );
+};
+
+const cgroupMembershipUnavailable = (
+  eventsPath: string,
+  error: unknown,
+): ScopeControllerError => {
+  if (error instanceof ScopeControllerError) {
+    return error;
+  }
+  const reason = error instanceof Error ? error.message : String(error);
+  return new ScopeControllerError(
+    "scope_membership_unavailable",
+    `Scope membership unavailable at ${eventsPath}: ${reason}`,
   );
 };
 
