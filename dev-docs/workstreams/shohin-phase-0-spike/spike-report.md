@@ -845,6 +845,65 @@ $ git -C /tmp/shohin-spike-target-worktree-010 status --short --branch
 
 Dependency note: the target worktree intentionally did not carry the nested package's untracked `plugins/shohin/spike/node_modules`; direct target-worktree `npm --prefix plugins/shohin/spike run typecheck` and `run build` failed there with `tsc: not found`, and `index.test.ts` could not resolve `wednesdayai/plugin-sdk`. The same code-level checks passed in the outer workspace where the nested package dependencies from task002 are installed. Target-specific WAI/Git/Node surface checks above all ran in `/tmp/shohin-spike-target-worktree-010`.
 
+### Target lifecycle metadata repair
+
+UTC repair proof: 2026-09-13T16:00:59Z. This corrects the VAL-TARGET-002 lifecycle metadata regression while preserving the original task010 target setup. The target branch `spike/shohin-spike-target` moved from previous clean pre-task baseline `1e91a5d7d7cbcb849b682e5c7d70a2b44b4b3bd3` to current clean pre-task baseline `913b6ec13e5e5fb10bb8fc9ed4ce06f9f6d8fab2`.
+
+Target metadata commit:
+
+```text
+$ git -C /tmp/shohin-spike-target-worktree-010 show --name-status --pretty=format: HEAD
+M	dev-docs/workstreams/shohin-spike-target/README.md
+
+$ git -C /tmp/shohin-spike-target-worktree-010 status --short --branch
+## spike/shohin-spike-target
+```
+
+Current target identity:
+
+```json
+{
+  "targetWorktree": "/tmp/shohin-spike-target-worktree-010",
+  "targetMode": "700",
+  "branch": "spike/shohin-spike-target",
+  "commonGitDir": "/data/Code/WednesdayAI-plugins/.git",
+  "previousBaseline": "1e91a5d7d7cbcb849b682e5c7d70a2b44b4b3bd3",
+  "previousBaselineReadmeStatus": "draft",
+  "currentBaseline": "913b6ec13e5e5fb10bb8fc9ed4ce06f9f6d8fab2",
+  "currentReadmeStatus": "active",
+  "precheckSpecSha": "0bb3dce2963aa76f830f1acea6d4db456b8c8b97",
+  "precheckBase": "8f6285b0d514a6e91498f4e9e7a62c74d0a82c95",
+  "taskCount": 2
+}
+```
+
+Preserved target hashes after the repair and disposable-clone proof:
+
+```text
+49f02b9999c84c19e438a124b4b08ed2eb14063d788a1cc09f1510c5ed296ea8  dev-docs/workstreams/shohin-spike-target/README.md
+5a7448e59dd745521a6f2c3f6bff633501032639781d72130897b6b0c7e4266f  docs/superpowers/specs/2026-09-13-shohin-spike-target.md
+a2a632bf39cc0a39ba86c772df2c938c261de932bfe2933d3f386d84c3cb06c0  docs/plans/shohin-spike-target/.precheck.passed
+c2a15b2bffbbe452be9c4a2e5bb074dd79bb34324e5622b9be6d7c75dee8ad0e  docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs
+7d2dd36505d8276cc69241434a2b3ec59c29beecc1397d21ebfad95f01557875  docs/plans/shohin-spike-target/phase-1/001-add-closed-shohin-storage-sqlitepath-config.md
+108f7d66c9e3a4cd57501d689e5cfc6a53d33bde803e945bafb65b650975f458  docs/plans/shohin-spike-target/phase-1/002-add-shohin-manifest-node-test.md
+```
+
+External repair evidence:
+
+```text
+5950d34d13d90e069c39a66bd512c0b82fbcf68d8a270134ccc9f4025bfc5ee4  /home/david/.zenith/projects/20260913T063314Z-resume-shohin-phase-0-spike-from-existing-docs-superpowers-specs/.zenith/missions/mission-001/evidence/harness/repair-r2/current-target-baseline.json
+8b028e5449eadbbfea4c24da39d11f556416bdf9f5e24897ad0ec476c90c0894  /home/david/.zenith/projects/20260913T063314Z-resume-shohin-phase-0-spike-from-existing-docs-superpowers-specs/.zenith/missions/mission-001/evidence/harness/repair-r2/target-status-repair-selfcheck.json
+502630b696e2bd786fd560c4f17fb84efd048be2f3d447d1f9c026f06ac4edc2  /home/david/.zenith/projects/20260913T063314Z-resume-shohin-phase-0-spike-from-existing-docs-superpowers-specs/.zenith/missions/mission-001/evidence/harness/repair-r2/target-status-repair-selfcheck.log
+```
+
+Disposable clone proof: argument-array verifier used `/tmp/shohin-target-r2-clone-KaVu7p` at baseline `913b6ec13e5e5fb10bb8fc9ed4ce06f9f6d8fab2`. `wai-branch-guard.sh --guard`, `wai-freshness.sh shohin-spike-target`, `wai-readiness.sh shohin-spike-target --repo-root /tmp/shohin-target-r2-clone-KaVu7p`, `wai-plan-lint.sh shohin-spike-target`, `wai-precheck.sh ... --check-only`, `wai-submit-spec.sh --verify-render ...`, and `wai-submit-plan.sh --verify-render ...` all exited 0. The target-specific status check observed README `status: active`, precheck present, target status violation absent, and no `WAI_DAG_TEST_MODE` was passed to the checks.
+
+Unchanged two-task fixture proof in the disposable clone: `node --test docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs` exited 1 at the clean pre-task baseline, exited 0 after only `plugins/shohin/openclaw.plugin.json` was edited, and task001 gate passed at temporary commit `f0ae644f2cc86109b57b5e79a4c312e30edf1dd0` with commit file set `M plugins/shohin/openclaw.plugin.json`. Task002 then created only `plugins/shohin/manifest.test.mjs`; `node --check`, `node --test`, and task002 gate passed at temporary commit `11fe38ac186524aa926e49e86a918a84e7b43194` with commit file set `A plugins/shohin/manifest.test.mjs`. These temporary commits live only in the disposable clone; the real target worktree remains clean at `913b6ec13e5e5fb10bb8fc9ed4ce06f9f6d8fab2`.
+
+Global status caveat: `wai-status.sh` in the disposable clone exited 3 for an inherited unrelated workstream, `dev-docs/workstreams/shohin-phase-0-spike/README.md`, which is still `draft` despite `docs/plans/shohin-phase-0-spike/.precheck.passed`. The target topic itself no longer has the draft-plus-advancement violation. This repair intentionally did not edit the inherited outer workstream README or any unrelated workstream metadata.
+
+Remaining parent consumers to update before work011: `docs/plans/shohin-phase-0-spike/decisions-ledger.md` still records old target baseline `1e91a5d7d7cbcb849b682e5c7d70a2b44b4b3bd3`; mission regression ledger `missions/mission-001/regressions/VAL-TARGET-002.md` still records the now-repaired draft status as current; any work011 assignment/harness prompt that restores or verifies the target pre-task baseline must consume `evidence/harness/repair-r2/current-target-baseline.json` and use `913b6ec13e5e5fb10bb8fc9ed4ce06f9f6d8fab2`. Historical old-baseline lines earlier in this report remain preserved transcript evidence, not the current baseline.
+
 ## SC1 — scope cancellation
 <!-- evidence:SC1 -->
 
