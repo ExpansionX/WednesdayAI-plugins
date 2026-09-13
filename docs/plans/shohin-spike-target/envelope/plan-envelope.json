@@ -1,0 +1,78 @@
+{
+  "schema_version": "1",
+  "kind": "plan",
+  "topic": "shohin-spike-target",
+  "spec_path": "docs/superpowers/specs/2026-09-13-shohin-spike-target.md",
+  "approach": "Keep the disposable target branch at a clean pre-task baseline. The first task makes only the Shohin manifest schema edit and runs the precommitted targeted gate fixture. The second task creates only the node:test manifest regression and depends on the first task.",
+  "phases": [
+    {
+      "number": "1",
+      "name": "Target Manifest Boundary",
+      "goal": "Make the smallest manifest schema change, then add the smallest regression proving it."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "001",
+      "phase": "1",
+      "title": "Add closed Shohin storage sqlitePath config",
+      "status": "ready",
+      "depends_on": [],
+      "parallel": false,
+      "conflicts_with": [],
+      "files": [
+        "plugins/shohin/openclaw.plugin.json"
+      ],
+      "irreversible": false,
+      "scope_test": "docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs",
+      "allowed_change": "edit",
+      "covers_criteria": [
+        "SC1"
+      ],
+      "covers_tests": [
+        "TS1"
+      ],
+      "failing_test": "The precommitted targeted gate fixture reads the baseline Shohin manifest and exits nonzero because configSchema.properties.storage is absent. Run `node --test docs/plans/shohin-spike-target/reviews/t001-storage-sqlite-path-gate.mjs` before the manifest edit and record the nonzero exit.",
+      "change": "**File:** `plugins/shohin/openclaw.plugin.json`\n\nAdd `storage` under `configSchema.properties` as `{ \"type\": \"object\", \"additionalProperties\": false, \"properties\": { \"sqlitePath\": { \"type\": \"string\" } } }`. Leave the existing `enabled` property and top-level closed config schema intact. Do not edit any other product file.",
+      "allowed_moves": "Manifest-only edit. Do not add the node:test regression in this task. Do not touch target plan artifacts except for normal WAI gate bookkeeping.",
+      "stop_triggers": "Stop if the gate fixture is not red before the manifest edit, if the manifest edit touches any path other than `plugins/shohin/openclaw.plugin.json`, or if the fixture is not green after the intended edit.",
+      "manual_verification": "Run the targeted fixture before and after the manifest-only edit. The baseline run must exit nonzero, and the post-edit run must exit zero."
+    },
+    {
+      "id": "002",
+      "phase": "1",
+      "title": "Add Shohin manifest node test",
+      "status": "ready",
+      "depends_on": [
+        "001"
+      ],
+      "parallel": false,
+      "conflicts_with": [],
+      "files": [
+        "plugins/shohin/manifest.test.mjs"
+      ],
+      "irreversible": false,
+      "scope_test": "plugins/shohin/manifest.test.mjs",
+      "allowed_change": "create",
+      "covers_criteria": [
+        "SC2"
+      ],
+      "covers_tests": [
+        "TS2"
+      ],
+      "failing_test": "Create a node:test regression that reads the Shohin manifest after task 001 and asserts the closed storage sqlitePath schema. The file is absent at the target baseline, so task-gate's create boundary proves it is introduced by this task.",
+      "change": "**File:** `plugins/shohin/manifest.test.mjs`\n\nCreate a node:test module using `node:assert/strict` and `node:fs` to parse `plugins/shohin/openclaw.plugin.json`. Assert that `configSchema.properties.storage.type` is `object`, `configSchema.properties.storage.additionalProperties` is `false`, the storage schema exposes only `sqlitePath`, and `configSchema.properties.storage.properties.sqlitePath.type` is `string`.",
+      "allowed_moves": "Test-file creation only. Do not edit the Shohin manifest or any other product file in this task.",
+      "stop_triggers": "Stop if task 002 touches anything except `plugins/shohin/manifest.test.mjs`, if it does not depend on task 001, or if `node --test plugins/shohin/manifest.test.mjs` is not green after creation.",
+      "manual_verification": "Run `node --test plugins/shohin/manifest.test.mjs` after task 002 creates the file and confirm the commit file set contains only the new test file.",
+      "siblings": [
+        "plugins/shohin/LICENSE",
+        "plugins/shohin/README.md",
+        "plugins/shohin/VISION.md",
+        "plugins/shohin/index.ts",
+        "plugins/shohin/openclaw.plugin.json",
+        "plugins/shohin/package.json"
+      ]
+    }
+  ]
+}
