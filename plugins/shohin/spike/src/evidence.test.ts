@@ -232,6 +232,137 @@ describe("Shohin executor hint parsing", () => {
     });
   });
 
+  it("parses the native WAI run-state schema with run identity and task states", () => {
+    const result = parseExecutorHints({
+      expectedRepoRoot: "/tmp/shohin-native-repo",
+      expectedTaskIds: ["001", "002", "003", "004", "005", "006"],
+      expectedTopic: "shohin-native",
+      inputs: {
+        runStateJson: JSON.stringify({
+          attentionItems: [
+            { kind: "gate-fail", reason: "fixture sentinel", task_id: "006" },
+          ],
+          blockedTaskIds: ["005"],
+          completedTaskIds: ["001"],
+          currentTaskId: "004",
+          failedTaskIds: ["002"],
+          lastUpdated: "2026-09-13T20:55:00Z",
+          pendingTaskIds: ["003"],
+          phase: "Running",
+          repoRoot: "/tmp/shohin-native-repo",
+          runId: "run-native",
+          topic: "shohin-native",
+        }),
+      },
+    });
+
+    expect(result.hints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          file: "run_state",
+          kind: "run_state",
+          runId: "run-native",
+          state: "completed",
+          taskId: "001",
+          terminal: true,
+          topic: "shohin-native",
+        }),
+        expect.objectContaining({
+          file: "run_state",
+          kind: "run_state",
+          runId: "run-native",
+          state: "failed",
+          taskId: "002",
+          terminal: true,
+        }),
+        expect.objectContaining({
+          file: "run_state",
+          kind: "run_state",
+          runId: "run-native",
+          state: "pending",
+          taskId: "003",
+          terminal: false,
+        }),
+        expect.objectContaining({
+          file: "run_state",
+          kind: "run_state",
+          runId: "run-native",
+          state: "current",
+          taskId: "004",
+          terminal: false,
+        }),
+        expect.objectContaining({
+          file: "run_state",
+          kind: "run_state",
+          runId: "run-native",
+          state: "blocked",
+          taskId: "005",
+          terminal: false,
+        }),
+        expect.objectContaining({
+          file: "run_state",
+          kind: "run_state",
+          reason: "fixture sentinel",
+          runId: "run-native",
+          state: "attention",
+          taskId: "006",
+          terminal: false,
+        }),
+      ]),
+    );
+    expect(result.hints.every((hint) => hint.authoritative === false)).toBe(true);
+  });
+
+  it("rejects native WAI run-state from a different topic or repo", () => {
+    const baseState = {
+      blockedTaskIds: [],
+      completedTaskIds: ["001"],
+      currentTaskId: null,
+      failedTaskIds: [],
+      lastUpdated: "2026-09-13T20:55:00Z",
+      pendingTaskIds: [],
+      phase: "Running",
+      repoRoot: "/tmp/right-repo",
+      runId: "native-run",
+      topic: "right-topic",
+    };
+
+    for (const runStateJson of [
+      JSON.stringify({ ...baseState, topic: "wrong-topic" }),
+      JSON.stringify({ ...baseState, repoRoot: "/tmp/wrong-repo" }),
+    ]) {
+      const result = parseExecutorHints({
+        expectedRepoRoot: "/tmp/right-repo",
+        expectedTaskIds: ["001"],
+        expectedTopic: "right-topic",
+        inputs: { runStateJson },
+      });
+
+      expect(result.hints).toEqual([
+        expect.objectContaining({ file: "run_state", kind: "malformed" }),
+      ]);
+      expect(result.proposedTaskCommits).toEqual({});
+    }
+  });
+
+  it("rejects malformed native WAI run-state records instead of falling through", () => {
+    const result = parseExecutorHints({
+      expectedTaskIds: ["001"],
+      inputs: {
+        runStateJson: JSON.stringify({
+          completedTaskIds: "001",
+          phase: "Running",
+          runId: "run-native",
+        }),
+      },
+    });
+
+    expect(result.hints).toEqual([
+      expect.objectContaining({ file: "run_state", kind: "malformed" }),
+    ]);
+    expect(result.proposedTaskCommits).toEqual({});
+  });
+
   it("does not let forged terminal hints produce verified success", () => {
     const fixture = makeFixtureRepo("forged-hints");
     const hints = parseExecutorHints({

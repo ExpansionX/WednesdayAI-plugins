@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -43,9 +44,13 @@ const supervisorMockState = vi.hoisted(() => {
     instances: [] as Array<{
       cancel: Mock;
       dispose: Mock;
+      readRunSnapshot: Mock;
       recover: Mock;
       start: Mock;
     }>,
+    readRunSnapshotImpl: undefined as
+      | undefined
+      | ((runId: string, runRoot?: string) => unknown),
     recoverImpl: undefined as undefined | ((options: { runRoot: string }) => Promise<unknown>),
     startImpl: undefined as undefined | ((options: Record<string, unknown>) => Promise<unknown>),
   };
@@ -58,6 +63,36 @@ const supervisorMockState = vi.hoisted(() => {
         return state.cancelImpl(runId, runRoot);
       }
       return { alreadyStopped: false, runId };
+    });
+
+
+    public readonly readRunSnapshot = vi.fn((runId: string, runRoot?: string) => {
+      if (state.readRunSnapshotImpl) {
+        return state.readRunSnapshotImpl(runId, runRoot);
+      }
+      let status = "unknown";
+      try {
+        if (runRoot !== undefined) {
+          const record = JSON.parse(readFileSync(path.join(runRoot, runId, "run.json"), "utf-8")) as {
+            readonly status?: string;
+          };
+          status = record.status ?? status;
+        }
+      } catch {
+        status = "unknown";
+      }
+      return {
+        activity: status === "active" || status === "starting" || status === "reserved" ? "running" : "stopped",
+        hints: { authoritative: false, available: false, items: [], source: "executor" },
+        runId,
+        status,
+        truth: {
+          authoritative: true,
+          available: false,
+          state: "unavailable",
+          updatedAt: "2026-09-13T12:00:00.000Z",
+        },
+      };
     });
 
     public readonly recover = vi.fn(async (options: { runRoot: string }) => {
@@ -242,6 +277,53 @@ const validRoleBound = (role: string) => ({
   },
 });
 
+
+const sha256File = (filePath: string): string =>
+  `sha256:${createHash("sha256").update(readFileSync(filePath)).digest("hex")}`;
+
+const writeApprovedProfileRegistry = async (root: string) => {
+  const { approvedProfileDigestAlgorithm, canonicalJsonDigest } = await import(
+    "./src/profile-registry.js"
+  );
+  const targetRepoRoot = path.join(root, "target");
+  const sourceHome = path.join(root, "home");
+  const waiBundleSourceDir = path.join(root, "bundle");
+  mkdirSync(targetRepoRoot, { recursive: true });
+  mkdirSync(sourceHome, { recursive: true });
+  mkdirSync(waiBundleSourceDir, { recursive: true });
+  const runner = path.join(waiBundleSourceDir, "wai-dag-run.sh");
+  writeFileSync(runner, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+  const profile = {
+    approved: true,
+    approvedAt: "2026-09-13T21:30:00Z",
+    dependencies: [{ path: realpathSync.native(runner), sha256: sha256File(runner) }],
+    expectedArgv: ["bash", "wai-dag-run.sh", "profile-topic"],
+    expectedEnvPath: "/usr/bin:/bin",
+    expectedManifestHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    externalBaseline: "0123456789abcdef0123456789abcdef01234567",
+    generationId: "profile-generation",
+    heartbeatPollIntervalMs: 250,
+    heartbeatStaleAfterMs: 60_000,
+    id: "reviewed-profile",
+    kind: "deterministic-no-provider-probe",
+    maxAttempts: 1,
+    profileDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    profileDigestAlgorithm: approvedProfileDigestAlgorithm,
+    providerAccess: "denied",
+    runId: "profile-run",
+    runnerTimeoutSec: 120,
+    sourceHome: realpathSync.native(sourceHome),
+    targetRepoRoot: realpathSync.native(targetRepoRoot),
+    topic: "profile-topic",
+    waiBundleSourceDir: realpathSync.native(waiBundleSourceDir),
+    waiRunCommand: "bash",
+  };
+  const approved = { ...profile, profileDigest: canonicalJsonDigest(profile) };
+  const registryPath = path.join(root, "approved-profiles.json");
+  writeFileSync(registryPath, JSON.stringify({ profiles: [approved], version: 1 }, null, 2));
+  return { profile: approved, registryPath, targetRepoRoot: approved.targetRepoRoot };
+};
+
 const validOptions = (root: string): Record<string, unknown> => ({
   controlEnv: {
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
@@ -277,6 +359,7 @@ const validOptions = (root: string): Record<string, unknown> => ({
 beforeEach(() => {
   vi.resetModules();
   supervisorMockState.state.cancelImpl = undefined;
+  supervisorMockState.state.readRunSnapshotImpl = undefined;
   supervisorMockState.state.instances.splice(0);
   supervisorMockState.state.recoverImpl = undefined;
   supervisorMockState.state.startImpl = undefined;
@@ -481,6 +564,96 @@ describe("Shohin spike plugin registration", () => {
     expect(ready.supervisor.start).not.toHaveBeenCalled();
   });
 
+
+  it("allows only operator-approved no-provider profiles through admin run probeMode", async () => {
+    const root = makeTempRoot("approved-profile-rpc");
+    const registryPath = path.join(root, "approved-profiles.json");
+    const previousRegistry = process.env.SHOHIN_SPIKE_APPROVED_PROFILE_REGISTRY;
+    const previousDbus = process.env.DBUS_SESSION_BUS_ADDRESS;
+    const previousPath = process.env.PATH;
+    const previousRuntime = process.env.XDG_RUNTIME_DIR;
+    process.env.SHOHIN_SPIKE_APPROVED_PROFILE_REGISTRY = registryPath;
+    process.env.DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/1000/bus";
+    process.env.PATH = "/usr/bin:/bin";
+    process.env.XDG_RUNTIME_DIR = "/run/user/1000";
+    try {
+      const { profile, targetRepoRoot } = await writeApprovedProfileRegistry(root);
+      const ready = await registerReadyPlugin();
+      const response = await invoke(ready.methods.get("shohinSpike.run")!, {
+        options: {
+          approvedProfileId: "reviewed-profile",
+          generationId: "profile-generation",
+          probeMode: true,
+          runId: "profile-run",
+        },
+        repoRoot: targetRepoRoot,
+        topic: "profile-topic",
+      });
+
+      expect(response.ok).toBe(true);
+      expect(ready.supervisor.start).toHaveBeenCalledTimes(1);
+      const startArg = ready.supervisor.start.mock.calls[0][0] as Record<string, unknown>;
+      expect(startArg).toMatchObject({
+        approvedNoProviderProfile: {
+          classification: "zero-provider",
+          digest: profile.profileDigest,
+          expectedEnvPath: "/usr/bin:/bin",
+          id: "reviewed-profile",
+        },
+        externalBaseline: profile.externalBaseline,
+        generationId: "profile-generation",
+        heartbeatStaleAfterMs: 60_000,
+        maxAttempts: 1,
+        runId: "profile-run",
+        sourceHome: profile.sourceHome,
+        targetRepoRoot,
+        topic: "profile-topic",
+        waiBundleSourceDir: profile.waiBundleSourceDir,
+        waiRunCommand: "bash",
+      });
+      expect(startArg).not.toHaveProperty("costOracle");
+      expect(startArg).not.toHaveProperty("modelIds");
+
+      ready.supervisor.start.mockClear();
+      for (const options of [
+        { approvedProfileId: "reviewed-profile", generationId: "profile-generation", runId: "profile-run" },
+        { approvedProfileId: "reviewed-profile", controlEnv: { PATH: "/tmp/bin", XDG_RUNTIME_DIR: "/tmp/runtime" }, generationId: "profile-generation", probeMode: true, runId: "profile-run" },
+        { approvedProfileId: "reviewed-profile", generationId: "profile-generation", modelIds: {}, probeMode: true, runId: "profile-run" },
+        { approvedProfileId: "reviewed-profile", generationId: "profile-generation", probeMode: true, probes: { disableWatchdog: true }, runId: "profile-run" },
+        { approvedProfileId: "reviewed-profile", generationId: "profile-generation", probeMode: true, runId: "profile-run", runRoot: path.join(root, "caller-run-root") },
+      ]) {
+        const denied = await invoke(ready.methods.get("shohinSpike.run")!, {
+          options,
+          repoRoot: targetRepoRoot,
+          topic: "profile-topic",
+        });
+        expect(denied.ok).toBe(false);
+        expect(denied.error).toMatchObject({ code: "INVALID_REQUEST" });
+      }
+      expect(ready.supervisor.start).not.toHaveBeenCalled();
+    } finally {
+      if (previousRegistry === undefined) {
+        delete process.env.SHOHIN_SPIKE_APPROVED_PROFILE_REGISTRY;
+      } else {
+        process.env.SHOHIN_SPIKE_APPROVED_PROFILE_REGISTRY = previousRegistry;
+      }
+      if (previousDbus === undefined) {
+        delete process.env.DBUS_SESSION_BUS_ADDRESS;
+      } else {
+        process.env.DBUS_SESSION_BUS_ADDRESS = previousDbus;
+      }
+      if (previousPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = previousPath;
+      }
+      if (previousRuntime === undefined) {
+        delete process.env.XDG_RUNTIME_DIR;
+      } else {
+        process.env.XDG_RUNTIME_DIR = previousRuntime;
+      }
+    }
+  });
 
   it("uses the normal 60 second heartbeat stale default when run options omit it", async () => {
     const ready = await registerReadyPlugin();

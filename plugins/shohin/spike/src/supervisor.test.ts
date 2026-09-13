@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -26,6 +27,7 @@ import {
   type SpikeSupervisorDependencies,
   type SpikeSupervisorRecord,
 } from "./supervisor.js";
+import { enumerateExpectedTaskManifest } from "./evidence.js";
 import type {
   ScopeCancelHandle,
   ScopeCancelResult,
@@ -286,6 +288,44 @@ const populatedTerminalScopeIdentity = (): ScopeIdentity =>
     subState: "failed",
   }) as ScopeIdentity;
 
+const runGit = (cwd: string, args: readonly string[]): string =>
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "protocol.file.allow=never",
+      "-c",
+      "user.name=Shohin Test",
+      "-c",
+      "user.email=shohin-test@example.invalid",
+      ...args,
+    ],
+    { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+  ).trim();
+
+const ensureCommittedTargetFixture = (targetRoot: string): string => {
+  mkdirSync(targetRoot, { recursive: true });
+  if (!existsSync(path.join(targetRoot, ".git"))) {
+    execFileSync("git", ["init", "--quiet"], { cwd: targetRoot, stdio: "ignore" });
+    runGit(targetRoot, ["checkout", "--quiet", "-b", "shohin/spike-fixture"]);
+    const taskDir = path.join(targetRoot, "docs", "plans", "shohin-phase-0-spike", "phase-1");
+    mkdirSync(taskDir, { recursive: true });
+    for (const id of ["001", "002"]) {
+      writeFileSync(
+        path.join(taskDir, `${id}-fixture-task.md`),
+        `---\nid: "${id}"\nphase: 1\ntitle: "Fixture task ${id}"\nstatus: ready\n---\n`,
+      );
+    }
+    runGit(targetRoot, ["add", "docs/plans/shohin-phase-0-spike"]);
+    runGit(targetRoot, ["commit", "--quiet", "--no-gpg-sign", "-m", "baseline tasks"]);
+  }
+  return runGit(targetRoot, ["rev-parse", "HEAD"]);
+};
+
 const makeSupervisor = (root: string) => {
   const clock = new FakeClock();
   const scope = new FakeScopeController();
@@ -295,12 +335,12 @@ const makeSupervisor = (root: string) => {
   const targetRoot = path.join(root, "target");
   const commonGitDir = path.join(root, "repo", ".git");
   mkdirSync(repoRoot, { recursive: true });
-  mkdirSync(targetRoot, { recursive: true });
   mkdirSync(commonGitDir, { recursive: true });
+  const baseline = ensureCommittedTargetFixture(targetRoot);
   identity.identity = {
     branch: "shohin/spike-fixture",
     commonGitDir,
-    externalBaseline: "0123456789abcdef0123456789abcdef01234567",
+    externalBaseline: baseline,
     registeredRepoRoot: repoRoot,
     targetRepoRoot: targetRoot,
     topic: "shohin-phase-0-spike",
@@ -459,7 +499,7 @@ describe("SpikeSupervisor", () => {
     expect(record.identity).toMatchObject({
       branch: "shohin/spike-fixture",
       commonGitDir: path.join(root, "repo", ".git"),
-      externalBaseline: "0123456789abcdef0123456789abcdef01234567",
+      externalBaseline: expect.stringMatching(/^[0-9a-f]{40}$/),
       registeredRepoRoot: path.join(root, "repo"),
       targetRepoRoot: path.join(root, "target"),
       topic: "shohin-phase-0-spike",
@@ -666,7 +706,7 @@ describe("SpikeSupervisor", () => {
     expect(clean.scope.launches).toHaveLength(0);
   });
 
-  it("recovers active runs with heartbeat refresh before asynchronous truth checks", async () => {
+  it("schedules completion truth and refreshes active runs on recovery", async () => {
     const root = makeTempRoot("recover");
     mkdirSync(path.join(root, "source-home"), { recursive: true });
     const truthCalls: string[] = [];
@@ -696,6 +736,8 @@ describe("SpikeSupervisor", () => {
     await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
     fixture.scope.identity = stoppedScopeIdentity();
     await supervisor.recordRunnerExit("run007", 0);
+    await truthStartedPromise;
+    expect(truthCalls).toEqual(["run007"]);
     fixture.scope.identity = activeScopeIdentity();
     await supervisor.start(
       startOptions(root, {
@@ -721,14 +763,438 @@ describe("SpikeSupervisor", () => {
 
     expect(result.refreshedActiveRunIds).toEqual(["run009"]);
     expect(scopeHeartbeat(path.join(root, "run-data"), "run009")).not.toBe(before);
-    expect(truthCalls).toEqual([]);
-    await truthStartedPromise;
+    expect(result.scheduledTruthRunIds).toEqual([]);
     expect(truthCalls).toEqual(["run007"]);
     expect(fixture.identity.verifyActiveCalls).toBe(1);
     expect(fixture.scope.inspections.at(-1)?.controlEnv).toEqual(
       fixture.scope.expectedControlEnv,
     );
     expect(fixture.scope.launches).toHaveLength(3);
+  });
+
+  it("refuses approved no-provider manifest and argv mismatches before dispatch", async () => {
+    const root = makeTempRoot("approved-profile-supervisor");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const manifest = enumerateExpectedTaskManifest({
+      baselineCommit: fixture.identity.identity!.externalBaseline,
+      repoRoot: fixture.targetRoot,
+      taskDirectory: "docs/plans/shohin-phase-0-spike",
+    });
+    const baseProfile = {
+      classification: "zero-provider" as const,
+      digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      expectedArgv: ["/resolved/bash", "wai-dag-run.sh", "shohin-phase-0-spike"],
+      expectedManifestHash: manifest.hash,
+      id: "approved-profile",
+    };
+
+    await expect(
+      fixture.supervisor.start(
+        startOptions(root, {
+          approvedNoProviderProfile: {
+            ...baseProfile,
+            expectedManifestHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          },
+          costOracle: undefined,
+          modelIds: undefined,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_option" });
+    expect(fixture.scope.launches).toHaveLength(0);
+
+    const argvRoot = makeTempRoot("approved-profile-argv");
+    mkdirSync(path.join(argvRoot, "source-home"), { recursive: true });
+    const argvFixture = makeSupervisor(argvRoot);
+    const argvManifest = enumerateExpectedTaskManifest({
+      baselineCommit: argvFixture.identity.identity!.externalBaseline,
+      repoRoot: argvFixture.targetRoot,
+      taskDirectory: "docs/plans/shohin-phase-0-spike",
+    });
+    await expect(
+      argvFixture.supervisor.start(
+        startOptions(argvRoot, {
+          approvedNoProviderProfile: {
+            ...baseProfile,
+            expectedArgv: ["/resolved/other", "wai-dag-run.sh", "shohin-phase-0-spike"],
+            expectedManifestHash: argvManifest.hash,
+          },
+          costOracle: undefined,
+          modelIds: undefined,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_option" });
+    expect(argvFixture.scope.launches).toHaveLength(0);
+  });
+
+  it("refuses approved no-provider starting identity, verifier and generation binding mismatches before dispatch", async () => {
+    const root = makeTempRoot("approved-profile-bindings");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const manifest = enumerateExpectedTaskManifest({
+      baselineCommit: fixture.identity.identity!.externalBaseline,
+      repoRoot: fixture.targetRoot,
+      taskDirectory: "docs/plans/shohin-phase-0-spike",
+    });
+    const baseProfile = {
+      classification: "zero-provider" as const,
+      digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      expectedArgv: ["/resolved/bash", "wai-dag-run.sh", "shohin-phase-0-spike"],
+      expectedManifestHash: manifest.hash,
+      id: "approved-profile",
+    };
+
+    for (const approvedNoProviderProfile of [
+      { ...baseProfile, expectedCommonGitDir: path.join(root, "other-git") },
+      { ...baseProfile, expectedEnvPath: "/tmp/shadow:/usr/bin:/bin" },
+      { ...baseProfile, expectedStartingHead: "f".repeat(40) },
+      {
+        ...baseProfile,
+        expectedVerifier: {
+          gateScriptBasename: "task-gate.sh",
+          gateTimeoutMs: 30 * 60 * 1000,
+          taskDirectory: "docs/plans/other-topic",
+          testCommand: "npm --prefix plugins/shohin/spike exec -- vitest run {scope}",
+          typecheckCommand: "npm --prefix plugins/shohin/spike run typecheck",
+        },
+      },
+      {
+        ...baseProfile,
+        expectedGenerationHashes: {
+          VERSION: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          cost: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          executors: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          gate: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          run: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          watch: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      },
+    ]) {
+      const isolatedRoot = makeTempRoot("approved-profile-binding");
+      mkdirSync(path.join(isolatedRoot, "source-home"), { recursive: true });
+      const isolated = makeSupervisor(isolatedRoot);
+      const isolatedManifest = enumerateExpectedTaskManifest({
+        baselineCommit: isolated.identity.identity!.externalBaseline,
+        repoRoot: isolated.targetRoot,
+        taskDirectory: "docs/plans/shohin-phase-0-spike",
+      });
+      await expect(
+        isolated.supervisor.start(
+          startOptions(isolatedRoot, {
+            approvedNoProviderProfile: {
+              ...approvedNoProviderProfile,
+              expectedManifestHash: isolatedManifest.hash,
+            },
+            costOracle: undefined,
+            modelIds: undefined,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "invalid_option" });
+      expect(isolated.scope.launches).toHaveLength(0);
+    }
+  });
+
+  it("publishes native WAI run-state and attention observations through public status", async () => {
+    const root = makeTempRoot("observations");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const topicDir = path.join(fixture.targetRoot, "docs", "plans", "shohin-phase-0-spike");
+    writeFileSync(
+      path.join(topicDir, ".wai-run-state.json"),
+      JSON.stringify({
+        blockedTaskIds: [],
+        completedTaskIds: ["001"],
+        currentTaskId: null,
+        failedTaskIds: [],
+        lastUpdated: "2026-09-13T11:59:00.000Z",
+        pendingTaskIds: [],
+        phase: "terminal",
+        repoRoot: fixture.targetRoot,
+        runId: "prior-native-run",
+        topic: "shohin-phase-0-spike",
+      }),
+    );
+    await fixture.supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+
+    const runRoot = path.join(root, "run-data");
+    const runDir = path.join(runRoot, "run007");
+    const prelaunchSnapshot = fixture.supervisor.readRunSnapshot("run007", runRoot);
+    expect(prelaunchSnapshot.hints.items.some((hint) => hint.runId === "prior-native-run")).toBe(false);
+    expect(readRecord(runRoot).observations?.sources.runStateJson.status).toBe("stale_prelaunch");
+    writeFileSync(
+      path.join(runDir, "attention.jsonl"),
+      `${JSON.stringify({
+        at: "2026-09-13T12:00:02.000Z",
+        id: "001",
+        reason: "operator review",
+        runId: "run007",
+        state: "blocked",
+        topic: "shohin-phase-0-spike",
+      })}\n`,
+    );
+    writeFileSync(
+      path.join(topicDir, ".wai-run-state.json"),
+      JSON.stringify(
+        {
+          attentionItems: [{ kind: "needs_review", reason: "gate failed", task_id: "002" }],
+          blockedTaskIds: [],
+          completedTaskIds: ["001"],
+          currentTaskId: "002",
+          failedTaskIds: [],
+          lastUpdated: "2026-09-13T12:00:03.000Z",
+          pendingTaskIds: [],
+          phase: "worker",
+          repoRoot: fixture.targetRoot,
+          runId: "native-wai-run-001",
+          topic: "shohin-phase-0-spike",
+        },
+        null,
+        2,
+      ),
+    );
+
+    const snapshot = fixture.supervisor.readRunSnapshot("run007", runRoot);
+
+    expect(snapshot.activity).toBe("active");
+    expect(snapshot.hints).toMatchObject({
+      authoritative: false,
+      available: true,
+      source: "executor",
+    });
+    expect(snapshot.hints.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authoritative: false,
+          file: "notify",
+          reason: "operator review",
+          runId: "run007",
+          source: "executor",
+          state: "blocked",
+          taskId: "001",
+          topic: "shohin-phase-0-spike",
+        }),
+        expect.objectContaining({
+          authoritative: false,
+          file: "run_state",
+          runId: "native-wai-run-001",
+          source: "executor",
+          state: "completed",
+          taskId: "001",
+          terminal: true,
+        }),
+        expect.objectContaining({
+          authoritative: false,
+          file: "run_state",
+          reason: "gate failed",
+          runId: "native-wai-run-001",
+          source: "executor",
+          state: "attention",
+          taskId: "002",
+        }),
+      ]),
+    );
+    expect(snapshot.hints.items.every((hint) => hint.authoritative === false)).toBe(true);
+
+    writeFileSync(
+      path.join(topicDir, ".wai-run-state.json"),
+      JSON.stringify({
+        attentionItems: [],
+        blockedTaskIds: [],
+        completedTaskIds: ["001"],
+        currentTaskId: "002",
+        failedTaskIds: [],
+        lastUpdated: "2026-09-13T12:00:04.000Z",
+        pendingTaskIds: [],
+        phase: "worker",
+        repoRoot: fixture.targetRoot,
+        runId: "native-wai-run-002",
+        topic: "shohin-phase-0-spike",
+      }),
+    );
+    const changedIdSnapshot = fixture.supervisor.readRunSnapshot("run007", runRoot);
+    expect(changedIdSnapshot.hints.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authoritative: false,
+          file: "run_state",
+          kind: "malformed",
+          raw: "native_run_id_changed",
+          reason: "native_run_id_changed",
+          runId: "native-wai-run-002",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects wrong-topic and wrong-repo native run-state in public observations", async () => {
+    const root = makeTempRoot("wrong-observations");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    await fixture.supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    const topicDir = path.join(fixture.targetRoot, "docs", "plans", "shohin-phase-0-spike");
+
+    for (const override of [
+      { topic: "other-topic" },
+      { repoRoot: path.join(root, "other-repo") },
+    ]) {
+      writeFileSync(
+        path.join(topicDir, ".wai-run-state.json"),
+        JSON.stringify({
+          attentionItems: [],
+          blockedTaskIds: [],
+          completedTaskIds: ["001"],
+          currentTaskId: null,
+          failedTaskIds: [],
+          lastUpdated: "2026-09-13T12:00:03.000Z",
+          pendingTaskIds: [],
+          phase: "worker",
+          repoRoot: fixture.targetRoot,
+          runId: "native-wai-run",
+          topic: "shohin-phase-0-spike",
+          ...override,
+        }),
+      );
+      const snapshot = fixture.supervisor.readRunSnapshot("run007", path.join(root, "run-data"));
+      expect(snapshot.hints.items).toEqual([
+        expect.objectContaining({ file: "run_state", kind: "malformed" }),
+      ]);
+    }
+  });
+
+  it.each([
+    { code: "runner_nonzero", exitStatus: 7, status: "failed" },
+    { code: "gate_nonzero", exitStatus: 0, status: "exited" },
+    { code: "missing_task_commit", exitStatus: 0, status: "exited" },
+  ] as const)(
+    "persists terminal exit and named $code verifier failure asynchronously",
+    async ({ code, exitStatus, status }) => {
+      const root = makeTempRoot(`truth-${code}`);
+      mkdirSync(path.join(root, "source-home"), { recursive: true });
+      const fixture = makeSupervisor(root);
+      const supervisor = new SpikeSupervisor({
+        ...fixture.dependencies,
+        truth: {
+          verifyExitedRun: async () => ({
+            expectedTasks: [],
+            failures: [{ code, message: code }],
+            gateResults: [],
+            hints: [],
+            manifestHash: "sha256:fixture",
+            verified: false,
+          }),
+        },
+      });
+      await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+      fixture.scope.identity = stoppedScopeIdentity();
+      await supervisor.recordRunnerExit("run007", exitStatus);
+      const runRoot = path.join(root, "run-data");
+
+      await vi.waitFor(() => {
+        const record = readRecord(runRoot);
+        expect(record.status).toBe(status);
+        expect(record.runnerExit).toMatchObject({ status: exitStatus });
+        expect(record.truth).toMatchObject({
+          available: true,
+          failureCodes: [code],
+          state: "failure",
+          verified: false,
+        });
+      });
+    },
+  );
+
+  it("prefers independently discovered branch task commits over forged executor candidates", async () => {
+    const root = makeTempRoot("branch-discovery");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const supervisor = new SpikeSupervisor({
+      clock: fixture.clock,
+      executables: fixture.executables,
+      identity: fixture.identity,
+      scope: fixture.scope,
+    });
+    const options = startOptions(root, { costOracle: makeOracle(1) });
+    const bundle = options.waiBundleSourceDir as string;
+    writeFileSync(path.join(bundle, "task-gate.sh"), "#!/usr/bin/env bash\nexit 0\n");
+    chmodSync(path.join(bundle, "task-gate.sh"), 0o755);
+
+    await supervisor.start(options);
+    const topicDir = path.join(fixture.targetRoot, "docs", "plans", "shohin-phase-0-spike");
+    const outputOne = path.join(topicDir, "outputs", "001.txt");
+    mkdirSync(path.dirname(outputOne), { recursive: true });
+    writeFileSync(outputOne, "valid branch task 001\n");
+    runGit(fixture.targetRoot, ["add", "docs/plans/shohin-phase-0-spike/outputs/001.txt"]);
+    runGit(fixture.targetRoot, ["commit", "--quiet", "--no-gpg-sign", "-m", "dag-worker: 001"]);
+    const taskOneCommit = runGit(fixture.targetRoot, ["rev-parse", "HEAD"]);
+
+    const outputTwo = path.join(topicDir, "outputs", "002.txt");
+    writeFileSync(outputTwo, "valid branch task 002\n");
+    runGit(fixture.targetRoot, ["add", "docs/plans/shohin-phase-0-spike/outputs/002.txt"]);
+    runGit(fixture.targetRoot, ["commit", "--quiet", "--no-gpg-sign", "-m", "dag-worker: 002"]);
+    const taskTwoCommit = runGit(fixture.targetRoot, ["rev-parse", "HEAD"]);
+
+    const forgedCommit = "f".repeat(40);
+    writeFileSync(
+      path.join(topicDir, ".dag-passed-commits"),
+      `001 ${forgedCommit}\n002 ${taskTwoCommit}\n`,
+    );
+    fixture.scope.identity = stoppedScopeIdentity();
+    await supervisor.recordRunnerExit("run007", 0);
+
+    await vi.waitFor(() => {
+      const record = readRecord(path.join(root, "run-data"));
+      expect(record.truth).toMatchObject({ available: true, state: "success", verified: true });
+      expect(record.truth?.outcome?.gateResults.map((gate) => gate.commit).sort()).toEqual([
+        taskOneCommit,
+        taskTwoCommit,
+      ].sort());
+    });
+  });
+
+  it("recovers pending completion verification after the first process is gone", async () => {
+    const root = makeTempRoot("truth-recovery");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const firstSupervisor = new SpikeSupervisor({
+      ...fixture.dependencies,
+      truth: {
+        verifyExitedRun: async () => new Promise<never>(() => undefined),
+      },
+    });
+    await firstSupervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+    fixture.scope.identity = stoppedScopeIdentity();
+    await firstSupervisor.recordRunnerExit("run007", 0);
+    const runRoot = path.join(root, "run-data");
+    expect(readRecord(runRoot).truth).toMatchObject({ state: "pending" });
+
+    const truthCalls: string[] = [];
+    const restartedSupervisor = new SpikeSupervisor({
+      ...fixture.dependencies,
+      truth: {
+        verifyExitedRun: async (record) => {
+          truthCalls.push(record.runId);
+          return {
+            expectedTasks: [],
+            failures: [],
+            gateResults: [],
+            hints: [],
+            manifestHash: "sha256:fixture",
+            verified: true,
+          };
+        },
+      },
+    });
+    const result = await restartedSupervisor.recover({ runRoot });
+
+    expect(result.scheduledTruthRunIds).toEqual(["run007"]);
+    await vi.waitFor(() => {
+      expect(readRecord(runRoot).truth).toMatchObject({
+        available: true,
+        state: "success",
+        verified: true,
+      });
+    });
+    expect(truthCalls).toEqual(["run007"]);
   });
 
   it("does not refresh recovery heartbeat when an active record's scope is stopped", async () => {
@@ -995,9 +1461,15 @@ describe("SpikeSupervisor", () => {
     const stoppedRoot = makeTempRoot("wait-stopped");
     mkdirSync(path.join(stoppedRoot, "source-home"), { recursive: true });
     const stoppedFixture = makeSupervisor(stoppedRoot);
+    const stoppedSupervisor = new SpikeSupervisor({
+      ...stoppedFixture.dependencies,
+      truth: {
+        verifyExitedRun: async () => new Promise<never>(() => undefined),
+      },
+    });
     const stoppedWait = deferred<ScopeWaitResult>();
     stoppedFixture.scope.launchWait = stoppedWait.promise;
-    await stoppedFixture.supervisor.start(startOptions(stoppedRoot, { costOracle: makeOracle(1) }));
+    await stoppedSupervisor.start(startOptions(stoppedRoot, { costOracle: makeOracle(1) }));
     const stoppedRunRoot = path.join(stoppedRoot, "run-data");
     stoppedFixture.scope.identity = stoppedScopeIdentity();
     stoppedFixture.clock.current = "2026-09-13T12:00:01.000Z";
@@ -1007,7 +1479,7 @@ describe("SpikeSupervisor", () => {
       stderrTruncated: false,
     });
     await vi.waitFor(() => {
-      expect(readRecord(stoppedRunRoot).status).toBe("unknown");
+      expect(readRecord(stoppedRunRoot).status).toBe("failed");
     });
 
     const stoppedRecord = readRecord(stoppedRunRoot);
@@ -1016,7 +1488,9 @@ describe("SpikeSupervisor", () => {
       stderrTruncated: false,
     });
     expect(stoppedRecord.scopeLaunchExit?.stderr).toContain("heartbeat stale");
-    expect(stoppedRecord.journal.at(-1)?.event).toBe("scope_wait_observed_stopped");
+    expect(stoppedRecord.runnerExit).toMatchObject({ source: "scope_wait", status: 137 });
+    expect(stoppedRecord.truth).toMatchObject({ available: false, state: "pending" });
+    expect(stoppedRecord.journal.at(-1)?.event).toBe("runner_exit_observed");
 
     const activeRoot = makeTempRoot("wait-active");
     mkdirSync(path.join(activeRoot, "source-home"), { recursive: true });

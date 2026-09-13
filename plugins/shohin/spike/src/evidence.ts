@@ -30,10 +30,20 @@ export interface ExecutorHint {
   readonly file: ExecutorHintFile;
   readonly kind: ExecutorHintKind;
   readonly raw: string;
+  readonly at?: string;
   readonly commit?: string;
+  readonly reason?: string;
+  readonly runId?: string;
+  readonly state?: string;
   readonly taskId?: string;
   readonly terminal?: boolean;
+  readonly topic?: string;
 }
+
+type ExecutorHintDetails = Omit<
+  ExecutorHint,
+  "authoritative" | "commit" | "file" | "kind" | "raw" | "source" | "taskId" | "terminal"
+>;
 
 export interface ExecutorHintInputs {
   readonly commitMessages?: readonly string[];
@@ -45,7 +55,9 @@ export interface ExecutorHintInputs {
 }
 
 export interface ParseExecutorHintsOptions {
+  readonly expectedRepoRoot?: string;
   readonly expectedTaskIds: readonly string[];
+  readonly expectedTopic?: string;
   readonly inputs: ExecutorHintInputs;
   readonly maxBytes?: number;
   readonly maxHints?: number;
@@ -148,6 +160,7 @@ const defaultMaxLineBytes = 8 * 1024;
 const shaPattern = /^[0-9a-f]{40}$/i;
 const taskIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const terminalStatuses = new Set([
+  "completed",
   "done",
   "failed",
   "failure",
@@ -157,7 +170,9 @@ const terminalStatuses = new Set([
 ]);
 
 export const parseExecutorHints = ({
+  expectedRepoRoot,
   expectedTaskIds,
+  expectedTopic,
   inputs,
   maxBytes = defaultMaxBytes,
   maxHints = defaultMaxHints,
@@ -175,6 +190,7 @@ export const parseExecutorHints = ({
     taskId?: string,
     commit?: string,
     terminal?: boolean,
+    details: ExecutorHintDetails = {},
   ): void => {
     if (hints.length >= maxHints) {
       return;
@@ -188,6 +204,7 @@ export const parseExecutorHints = ({
       file,
       kind: finalKind,
       raw: boundedRaw,
+      ...details,
       ...(commit === undefined ? {} : { commit }),
       ...(taskId === undefined ? {} : { taskId }),
       ...(terminal === undefined ? {} : { terminal }),
@@ -207,7 +224,10 @@ export const parseExecutorHints = ({
   };
 
   parseNotify(inputs.notifyJsonl, maxBytes, addHint);
-  parseRunState(inputs.runStateJson, maxBytes, addHint);
+  parseRunState(inputs.runStateJson, maxBytes, addHint, {
+    expectedRepoRoot,
+    expectedTopic,
+  });
   parseDagPassedCommits(inputs.dagPassedCommits, maxBytes, addHint);
   parseOneCommitHint(
     "dag_plan_commit",
@@ -469,6 +489,7 @@ const parseNotify = (
     taskId?: string,
     commit?: string,
     terminal?: boolean,
+    details?: ExecutorHintDetails,
   ) => void,
 ): void => {
   if (content === undefined) {
@@ -488,6 +509,13 @@ const parseNotify = (
       readString(parsed, "id") ?? readString(parsed, "task_id"),
       readString(parsed, "commit") ?? readString(parsed, "sha"),
       readTerminal(parsed),
+      {
+        at: readString(parsed, "at"),
+        reason: readString(parsed, "reason"),
+        runId: readString(parsed, "runId") ?? readString(parsed, "run_id"),
+        state: readString(parsed, "state") ?? readString(parsed, "status"),
+        topic: readString(parsed, "topic"),
+      },
     );
   }
   if (bounded.truncated) {
@@ -505,14 +533,16 @@ const parseRunState = (
     taskId?: string,
     commit?: string,
     terminal?: boolean,
+    details?: ExecutorHintDetails,
   ) => void,
+  expected: { readonly expectedRepoRoot?: string; readonly expectedTopic?: string },
 ): void => {
   if (content === undefined) {
     return;
   }
   const bounded = boundContent(content, maxBytes);
   const parsed = parseJson(bounded.text);
-  const records = normalizeRunState(parsed);
+  const records = normalizeRunState(parsed, expected);
   if (records.length === 0) {
     addHint("run_state", "malformed", bounded.text);
     return;
@@ -525,6 +555,13 @@ const parseRunState = (
       taskId ?? readString(record, "id") ?? readString(record, "task_id"),
       readString(record, "commit") ?? readString(record, "sha"),
       readTerminal(record),
+      {
+        at: readString(record, "at") ?? readString(record, "lastUpdated"),
+        reason: readString(record, "reason") ?? readString(record, "kind"),
+        runId: readString(record, "runId"),
+        state: readString(record, "state") ?? readString(record, "status"),
+        topic: readString(record, "topic"),
+      },
     );
   }
   if (bounded.truncated) {
@@ -542,6 +579,7 @@ const parseDagPassedCommits = (
     taskId?: string,
     commit?: string,
     terminal?: boolean,
+    details?: ExecutorHintDetails,
   ) => void,
 ): void => {
   if (content === undefined) {
@@ -570,6 +608,7 @@ const parseOneCommitHint = (
     taskId?: string,
     commit?: string,
     terminal?: boolean,
+    details?: ExecutorHintDetails,
   ) => void,
 ): void => {
   if (content === undefined) {
@@ -594,6 +633,7 @@ const parseTextForCommitHint = (
     taskId?: string,
     commit?: string,
     terminal?: boolean,
+    details?: ExecutorHintDetails,
   ) => void,
 ): void => {
   const taskId = content.match(/\btask[_ -]?id[:= ]+([A-Za-z0-9._-]+)/i)?.[1];
@@ -624,6 +664,7 @@ const selectHintKind = (
 
 const normalizeRunState = (
   parsed: unknown,
+  expected: { readonly expectedRepoRoot?: string; readonly expectedTopic?: string },
 ): Array<{ readonly record: Record<string, unknown>; readonly taskId?: string }> => {
   if (Array.isArray(parsed)) {
     return parsed
@@ -632,6 +673,10 @@ const normalizeRunState = (
   }
   if (!isRecord(parsed)) {
     return [];
+  }
+  const native = normalizeNativeRunState(parsed, expected);
+  if (native !== undefined) {
+    return native;
   }
   const tasks = parsed.tasks;
   if (isRecord(tasks)) {
@@ -646,6 +691,131 @@ const normalizeRunState = (
     return [{ record: parsed }];
   }
   return [];
+};
+
+
+const nativeRunStateKeys = new Set([
+  "attentionItems",
+  "blockedTaskIds",
+  "completedTaskIds",
+  "currentTaskId",
+  "failedTaskIds",
+  "pendingTaskIds",
+  "phase",
+  "repoRoot",
+  "runId",
+  "topic",
+]);
+
+const normalizeNativeRunState = (
+  parsed: Record<string, unknown>,
+  expected: { readonly expectedRepoRoot?: string; readonly expectedTopic?: string },
+): Array<{ readonly record: Record<string, unknown>; readonly taskId?: string }> | undefined => {
+  if (!Object.keys(parsed).some((key) => nativeRunStateKeys.has(key))) {
+    return undefined;
+  }
+  const runId = readString(parsed, "runId");
+  const phase = readString(parsed, "phase");
+  const topic = readString(parsed, "topic");
+  const repoRoot = readString(parsed, "repoRoot");
+  if (runId === undefined || phase === undefined) {
+    return [];
+  }
+  if (expected.expectedTopic !== undefined && topic !== undefined && topic !== expected.expectedTopic) {
+    return [];
+  }
+  if (expected.expectedRepoRoot !== undefined && repoRoot !== undefined && path.resolve(repoRoot) !== expected.expectedRepoRoot) {
+    return [];
+  }
+  const base = {
+    at: readString(parsed, "lastUpdated"),
+    lastUpdated: readString(parsed, "lastUpdated"),
+    phase,
+    repoRoot,
+    runId,
+    topic,
+  };
+  const records: Array<{ readonly record: Record<string, unknown>; readonly taskId?: string }> = [];
+  const pushTaskIds = (key: string, state: string, terminal: boolean): boolean => {
+    const value = parsed[key];
+    if (value === undefined) {
+      return true;
+    }
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+      return false;
+    }
+    for (const taskId of value) {
+      records.push({
+        record: {
+          ...base,
+          state,
+          status: state,
+          task_id: taskId,
+          terminal,
+        },
+        taskId,
+      });
+    }
+    return true;
+  };
+
+  if (
+    !pushTaskIds("completedTaskIds", "completed", true) ||
+    !pushTaskIds("failedTaskIds", "failed", true) ||
+    !pushTaskIds("pendingTaskIds", "pending", false) ||
+    !pushTaskIds("blockedTaskIds", "blocked", false)
+  ) {
+    return [];
+  }
+
+  const currentTaskId = parsed.currentTaskId;
+  if (currentTaskId !== undefined && currentTaskId !== null) {
+    if (typeof currentTaskId !== "string") {
+      return [];
+    }
+    records.push({
+      record: {
+        ...base,
+        state: "current",
+        status: "current",
+        task_id: currentTaskId,
+        terminal: false,
+      },
+      taskId: currentTaskId,
+    });
+  }
+
+  const attentionItems = parsed.attentionItems;
+  if (attentionItems !== undefined) {
+    if (!Array.isArray(attentionItems)) {
+      return [];
+    }
+    for (const item of attentionItems) {
+      if (!isRecord(item)) {
+        return [];
+      }
+      const taskId = readString(item, "task_id") ?? readString(item, "id");
+      const kind = readString(item, "kind") ?? "attention";
+      const reason = readString(item, "reason");
+      if (taskId === undefined) {
+        return [];
+      }
+      records.push({
+        record: {
+          ...base,
+          kind,
+          ...(reason === undefined ? {} : { reason }),
+          state: "attention",
+          status: kind,
+          task_id: taskId,
+          terminal: false,
+        },
+        taskId,
+      });
+    }
+  }
+
+  return records;
 };
 
 const readString = (

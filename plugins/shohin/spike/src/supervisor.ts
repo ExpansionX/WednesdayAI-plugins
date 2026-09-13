@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   accessSync,
@@ -13,6 +13,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -44,7 +45,13 @@ import {
   type ScopedRunHandle,
 } from "./scope.js";
 import {
+  enumerateExpectedTaskManifest,
+  parseExecutorHints,
+  verifyAuthoritativeOutcome,
   type AuthoritativeOutcome,
+  type ExecutorHint,
+  type ExpectedTask,
+  type TruthFailureCode,
 } from "./evidence.js";
 
 export const requiredWaiBundleFiles = {
@@ -218,6 +225,102 @@ export interface RunnerGenerationRecord {
   readonly requiredFiles: typeof requiredWaiBundleFiles;
 }
 
+export interface ApprovedNoProviderVerifierBinding {
+  readonly gateScriptBasename: string;
+  readonly gateTimeoutMs: number;
+  readonly taskDirectory: string;
+  readonly testCommand: string;
+  readonly typecheckCommand: string;
+}
+
+export type ApprovedNoProviderGenerationHashes = Readonly<Record<RequiredWaiBundleFile, string>>;
+
+export interface ApprovedNoProviderProfileRecord {
+  readonly approvedAt?: string;
+  readonly classification: "zero-provider";
+  readonly digest: string;
+  readonly expectedArgv: readonly string[];
+  readonly expectedCommonGitDir?: string;
+  readonly expectedEnvPath?: string;
+  readonly expectedGenerationHashes?: ApprovedNoProviderGenerationHashes;
+  readonly expectedManifestHash: string;
+  readonly expectedStartingHead?: string;
+  readonly expectedVerifier?: ApprovedNoProviderVerifierBinding;
+  readonly id: string;
+}
+
+export interface RunnerExitRecord {
+  readonly observedAt: string;
+  readonly source: "record_runner_exit" | "scope_wait";
+  readonly status: number;
+}
+
+export interface ObservationSourceRecord {
+  readonly bytesRead?: number;
+  readonly contentHash?: string;
+  readonly path: string;
+  readonly reason?: string;
+  readonly status: "absent" | "read" | "rejected" | "stale_prelaunch";
+}
+
+export interface RunObservationSourcesRecord {
+  readonly dagPassedCommits: ObservationSourceRecord;
+  readonly notifyJsonl: ObservationSourceRecord;
+  readonly runStateJson: ObservationSourceRecord;
+}
+
+export interface RunObservationBaselineRecord {
+  readonly capturedAt: string;
+  readonly sources: RunObservationSourcesRecord;
+}
+
+export interface RunObservationRecord {
+  readonly hints: readonly ExecutorHint[];
+  readonly proposedTaskCommits: Readonly<Record<string, string>>;
+  readonly sources: RunObservationSourcesRecord;
+  readonly updatedAt: string;
+}
+
+export interface HistoricalVerifierRecord {
+  readonly envPath: string;
+  readonly expectedManifestHash: string;
+  readonly expectedTasks: readonly ExpectedTask[];
+  readonly gateScript: string;
+  readonly gateTimeoutMs: number;
+  readonly recordedBranchRef: string;
+  readonly taskDirectory: string;
+  readonly testCommand: string;
+  readonly typecheckCommand: string;
+  readonly verifierRoot: string;
+}
+
+export interface TruthVerificationRecord {
+  readonly authoritative: true;
+  readonly available: boolean;
+  readonly failureCodes?: readonly TruthFailureCode[];
+  readonly message?: string;
+  readonly outcome?: AuthoritativeOutcome;
+  readonly state: "failure" | "pending" | "success" | "unavailable" | "verification_error";
+  readonly updatedAt: string;
+  readonly verified?: boolean;
+}
+
+export interface SpikePublicRunSnapshot {
+  readonly activity: "active" | "terminal" | "unknown";
+  readonly hints: {
+    readonly authoritative: false;
+    readonly available: boolean;
+    readonly items: readonly ExecutorHint[];
+    readonly source: "executor";
+    readonly updatedAt?: string;
+  };
+  readonly runId: string;
+  readonly status: SpikeRunStatus | "unknown";
+  readonly topic?: string;
+  readonly truth: TruthVerificationRecord;
+}
+
+
 export interface RuntimeAllowListRecord {
   readonly env: readonly string[];
   readonly home: readonly string[];
@@ -260,17 +363,24 @@ export interface SpikeSupervisorRecord {
   readonly recordPath: string;
   readonly runDir: string;
   readonly runId: string;
+  readonly noProviderProfile?: ApprovedNoProviderProfileRecord;
+  readonly observationBaseline?: RunObservationBaselineRecord;
+  readonly observations?: RunObservationRecord;
+  readonly runnerExit?: RunnerExitRecord;
   readonly runnerGeneration?: RunnerGenerationRecord;
   readonly runtimeAllowList: RuntimeAllowListRecord;
   readonly scope?: ScopeRecord;
   readonly scopeLaunchExit?: ScopeLaunchExitRecord;
   readonly spendLedger: DurableSpendLedger;
   readonly status: SpikeRunStatus;
+  readonly truth?: TruthVerificationRecord;
+  readonly verifier?: HistoricalVerifierRecord;
   readonly topic: string;
   readonly updatedAt: string;
 }
 
 export interface SpikeStartOptions {
+  readonly approvedNoProviderProfile?: ApprovedNoProviderProfileRecord;
   readonly assessorScriptPath: string;
   readonly budgetLedgerPath?: string;
   readonly controlSourceEnv: SourceEnvironment;
@@ -355,9 +465,15 @@ const controlEnvironmentKeys = [
 ] as const;
 const allowedRecordedControlEnvironment = new Set<string>(controlEnvironmentKeys);
 const heartbeatRefreshIntervalMs = 10_000;
+const observationRefreshIntervalMs = 500;
+const defaultGateTimeoutMs = 30 * 60 * 1000;
+const defaultTaskTestCommand = "npm --prefix plugins/shohin/spike exec -- vitest run {scope}";
+const defaultTaskTypecheckCommand = "npm --prefix plugins/shohin/spike run typecheck";
+const maxObservationFileBytes = 256 * 1024;
 
 interface ActiveRunMaintenance {
   disposed: boolean;
+  observationTimer?: NodeJS.Timeout;
   timer?: NodeJS.Timeout;
 }
 
@@ -367,20 +483,8 @@ const nodeClock: SpikeSupervisorClock = {
 };
 
 const defaultTruthAdapter: SpikeTruthAdapter = {
-  async verifyExitedRun() {
-    return {
-      expectedTasks: [],
-      failures: [
-        {
-          code: "expected_tasks_unavailable",
-          message: "No injected truth adapter or committed manifest equality inputs were configured",
-        },
-      ],
-      gateResults: [],
-      hints: [],
-      manifestHash: "",
-      verified: false,
-    };
+  async verifyExitedRun(record) {
+    return verifyRecordAuthoritativeOutcome(record);
   },
 };
 
@@ -481,6 +585,7 @@ export class SpikeSupervisor {
   private readonly runRoots = new Map<string, string>();
   private readonly scope: ScopeController;
   private readonly truth: SpikeTruthAdapter;
+  private readonly truthRequests = new Map<string, Promise<void>>();
 
   public constructor({
     clock = nodeClock,
@@ -526,6 +631,26 @@ export class SpikeSupervisor {
         topic,
       });
       await this.identity.ensureCleanTarget(identity);
+      const taskDirectory = taskDirectoryForTopic(topic);
+      const expectedManifest = enumerateExpectedTaskManifest({
+        baselineCommit: identity.externalBaseline,
+        repoRoot: identity.targetRepoRoot,
+        taskDirectory,
+      });
+      if (
+        options.approvedNoProviderProfile !== undefined &&
+        expectedManifest.hash !== options.approvedNoProviderProfile.expectedManifestHash
+      ) {
+        throw new SpikeSupervisorError(
+          "invalid_option",
+          "Approved no-provider profile manifest hash does not match the committed baseline tasks",
+          {
+            expected: options.approvedNoProviderProfile.expectedManifestHash,
+            observed: expectedManifest.hash,
+          },
+        );
+      }
+      verifyApprovedNoProviderStartingIdentity(options.approvedNoProviderProfile, identity);
 
       const heartbeat = this.refreshHeartbeat(runDir);
       const record = this.makeInitialRecord({
@@ -564,6 +689,7 @@ export class SpikeSupervisor {
       this.copyPristineBundle(options.waiBundleSourceDir, generationDir);
       const diffs = await this.applyPatches(generationDir, options);
       const hashes = hashRequiredBundleFiles(generationDir);
+      verifyApprovedNoProviderGeneration(options.approvedNoProviderProfile, hashes);
       freezeTree(generationDir);
 
       const runnerGeneration: RunnerGenerationRecord = {
@@ -574,14 +700,45 @@ export class SpikeSupervisor {
         path: generationDir,
         requiredFiles: requiredWaiBundleFiles,
       };
+      const approvedVerifier = options.approvedNoProviderProfile?.expectedVerifier;
+      const verifier: HistoricalVerifierRecord = {
+        envPath: pathEnvForControl(options.controlSourceEnv),
+        expectedManifestHash: expectedManifest.hash,
+        expectedTasks: expectedManifest.tasks,
+        gateScript: path.join(generationDir, requiredWaiBundleFiles.gate),
+        gateTimeoutMs: approvedVerifier?.gateTimeoutMs ?? defaultGateTimeoutMs,
+        recordedBranchRef: identity.branch,
+        taskDirectory,
+        testCommand: approvedVerifier?.testCommand ?? defaultTaskTestCommand,
+        typecheckCommand: approvedVerifier?.typecheckCommand ?? defaultTaskTypecheckCommand,
+        verifierRoot: path.join(runDir, "verifier-worktrees"),
+      };
+      verifyApprovedNoProviderVerifier(options.approvedNoProviderProfile, verifier);
+      const observationBaseline = collectObservationBaseline({
+        identity,
+        runDir,
+        topic,
+      }, this.clock.nowIso());
 
       const readyRecord = this.readRecord(runRoot, runId);
       this.writeRecord({
         ...readyRecord,
         heartbeat,
+        noProviderProfile: options.approvedNoProviderProfile,
+        observationBaseline,
+        observations: collectRunObservations({
+          ...readyRecord,
+          identity,
+          observationBaseline,
+          runDir,
+          topic,
+          verifier,
+        }, this.clock.nowIso()),
         runnerGeneration,
         runtimeAllowList,
         status: "starting",
+        truth: truthUnavailable(this.clock.nowIso()),
+        verifier,
         updatedAt: this.clock.nowIso(),
         journal: appendJournal(readyRecord, this.clock, "runner_generation_ready", {
           generationId,
@@ -590,6 +747,7 @@ export class SpikeSupervisor {
 
       const dispatchId = `dispatch-${runId}`;
       const spendLedger = await this.reserveBudget({
+        approvedNoProviderProfile: options.approvedNoProviderProfile,
         dispatchId,
         identity,
         modelIds: options.modelIds,
@@ -605,6 +763,7 @@ export class SpikeSupervisor {
         runtimeAllowList,
         tmpdir,
       });
+      verifyApprovedNoProviderLaunch(options.approvedNoProviderProfile, launch.runner);
       const reservedRecord = this.readRecord(runRoot, runId);
       this.writeRecord({
         ...reservedRecord,
@@ -648,6 +807,7 @@ export class SpikeSupervisor {
         controlEnv: launch.controlEnv,
         heartbeat: this.refreshHeartbeat(runDir),
         launchEnv: launch.executorEnv,
+        noProviderProfile: options.approvedNoProviderProfile,
         runnerGeneration,
         scope: {
           controlPid: scopeHandle.controlPid,
@@ -657,13 +817,19 @@ export class SpikeSupervisor {
           scopeId: scopeHandle.scopeId,
         },
         status: "active",
+        truth: truthUnavailable(this.clock.nowIso()),
         updatedAt: this.clock.nowIso(),
+        verifier,
         journal: appendJournal(activeRecord, this.clock, "scope_launched", {
           scopeId: scopeHandle.scopeId,
         }),
       };
-      this.writeRecord(finalRecord);
-      this.attachActiveMaintenance(finalRecord, scopeHandle);
+      const observedFinalRecord = {
+        ...finalRecord,
+        observations: collectRunObservations(finalRecord, this.clock.nowIso()),
+      };
+      this.writeRecord(observedFinalRecord);
+      this.attachActiveMaintenance(observedFinalRecord, scopeHandle);
       return {
         maxAttemptsNote: finalRecord.maxAttemptsNote,
         record: finalRecord,
@@ -703,6 +869,26 @@ export class SpikeSupervisor {
       journal: appendJournal(record, this.clock, "usage_reconciled"),
     });
     return ledger;
+  }
+
+  public readRunSnapshot(runId: string, runRootInput?: string): SpikePublicRunSnapshot {
+    let record: SpikeSupervisorRecord;
+    try {
+      record = this.readRecord(this.resolveRunRoot(runId, runRootInput), runId);
+    } catch (error) {
+      if (error instanceof SpikeSupervisorError && error.code === "record_unavailable") {
+        return {
+          activity: "unknown",
+          hints: { authoritative: false, available: false, items: [], source: "executor" },
+          runId,
+          status: "unknown",
+          truth: truthUnavailable(this.clock.nowIso()),
+        };
+      }
+      throw error;
+    }
+    const observedRecord = this.writeObservationSnapshot(record);
+    return publicRunSnapshot(observedRecord, this.clock.nowIso());
   }
 
   public async recover(options: SpikeRecoverOptions): Promise<SpikeRecoverResult> {
@@ -753,18 +939,20 @@ export class SpikeSupervisor {
         refreshedActiveRunIds.push(runId);
         continue;
       }
-      if (record.status === "exited") {
-        scheduledTruthRunIds.push(runId);
-        const scheduled = {
-          ...record,
-          updatedAt: this.clock.nowIso(),
-          journal: appendJournal(record, this.clock, "recovery_truth_scheduled"),
-        };
-        this.writeRecord(scheduled);
-        setTimeout(() => {
-          void this.truth.verifyExitedRun(scheduled);
-        }, 0);
-        continue;
+      if (record.status === "exited" || record.status === "failed") {
+        if (truthNeedsVerification(record.truth)) {
+          scheduledTruthRunIds.push(runId);
+          const scheduled = {
+            ...record,
+            observations: collectRunObservations(record, this.clock.nowIso()),
+            truth: truthPending(this.clock.nowIso()),
+            updatedAt: this.clock.nowIso(),
+            journal: appendJournal(record, this.clock, "recovery_truth_scheduled"),
+          };
+          this.writeRecord(scheduled);
+          this.scheduleTruthVerification(scheduled);
+          continue;
+        }
       }
       ignoredRunIds.push(runId);
       if (record.status === "lost" || record.status === "unknown") {
@@ -876,14 +1064,7 @@ export class SpikeSupervisor {
         readRecordedControlEnvironment(record),
       );
     }
-    this.disposeRunMaintenance(runRoot, runId);
-    this.activeTopics.delete(record.topic);
-    this.writeRecord({
-      ...record,
-      status: exitStatus === 0 ? "exited" : "failed",
-      updatedAt: this.clock.nowIso(),
-      journal: appendJournal(record, this.clock, "runner_exited", { exitStatus }),
-    });
+    this.persistRunnerExit(record, exitStatus, "record_runner_exit");
   }
 
   public async writeRunStatus(
@@ -924,10 +1105,57 @@ export class SpikeSupervisor {
     const entry: ActiveRunMaintenance = { disposed: false };
     this.maintenance.set(key, entry);
     this.activeTopics.add(record.topic);
+    this.writeObservationSnapshot(record);
+    this.scheduleObservationRefresh(entry, runRoot, record.runId);
     this.scheduleHeartbeatRefresh(entry, runRoot, record.runId);
     if (scopeHandle !== undefined) {
       this.observeScopeExit(entry, runRoot, record.runId, scopeHandle);
     }
+  }
+
+  private scheduleObservationRefresh(
+    entry: ActiveRunMaintenance,
+    runRoot: string,
+    runId: string,
+  ): void {
+    entry.observationTimer = setTimeout(() => {
+      this.refreshMaintainedObservations(entry, runRoot, runId);
+    }, observationRefreshIntervalMs);
+    entry.observationTimer.unref?.();
+  }
+
+  private refreshMaintainedObservations(
+    entry: ActiveRunMaintenance,
+    runRoot: string,
+    runId: string,
+  ): void {
+    if (entry.disposed) {
+      return;
+    }
+    try {
+      const record = this.readRecord(runRoot, runId);
+      if (record.status !== "active") {
+        this.disposeRunMaintenance(runRoot, runId);
+        return;
+      }
+      this.writeObservationSnapshot(record);
+    } catch {
+      this.disposeRunMaintenance(runRoot, runId);
+      return;
+    } finally {
+      if (!entry.disposed) {
+        this.scheduleObservationRefresh(entry, runRoot, runId);
+      }
+    }
+  }
+
+  private writeObservationSnapshot(record: SpikeSupervisorRecord): SpikeSupervisorRecord {
+    const updated = {
+      ...record,
+      observations: collectRunObservations(record, this.clock.nowIso()),
+    };
+    this.writeRecord(updated);
+    return updated;
   }
 
   private scheduleHeartbeatRefresh(
@@ -1081,9 +1309,13 @@ export class SpikeSupervisor {
         }
         verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
         if (!entry.disposed) {
-          this.markActiveRunUnknown(runRoot, runId, "scope_wait_observed_stopped", {
-            scopeLaunchExit,
-          });
+          if (exit.trusted === false) {
+            this.markActiveRunUnknown(runRoot, runId, "scope_wait_observed_untrusted", {
+              scopeLaunchExit,
+            });
+          } else {
+            this.persistRunnerExit(record, exit.status, "scope_wait", scopeLaunchExit);
+          }
         }
       } catch (error) {
         if (!entry.disposed) {
@@ -1140,7 +1372,92 @@ export class SpikeSupervisor {
     if (entry.timer !== undefined) {
       clearTimeout(entry.timer);
     }
+    if (entry.observationTimer !== undefined) {
+      clearTimeout(entry.observationTimer);
+    }
     this.maintenance.delete(key);
+  }
+
+  private persistRunnerExit(
+    record: SpikeSupervisorRecord,
+    exitStatus: number,
+    source: RunnerExitRecord["source"],
+    scopeLaunchExit?: ScopeLaunchExitRecord,
+  ): void {
+    const observedAt = this.clock.nowIso();
+    const next: SpikeSupervisorRecord = {
+      ...record,
+      observations: collectRunObservations(record, observedAt),
+      runnerExit: { observedAt, source, status: exitStatus },
+      ...(scopeLaunchExit === undefined ? {} : { scopeLaunchExit }),
+      status: exitStatus === 0 ? "exited" : "failed",
+      truth: truthPending(observedAt),
+      updatedAt: observedAt,
+      journal: appendJournal(record, this.clock, "runner_exit_observed", {
+        exitStatus,
+        source,
+      }),
+    };
+    this.disposeRunMaintenance(path.dirname(record.runDir), record.runId);
+    this.activeTopics.delete(record.topic);
+    this.writeRecord(next);
+    this.scheduleTruthVerification(next);
+  }
+
+  private scheduleTruthVerification(record: SpikeSupervisorRecord): void {
+    const runRoot = path.dirname(record.runDir);
+    const key = maintenanceKey(runRoot, record.runId);
+    if (this.truthRequests.has(key)) {
+      return;
+    }
+    const promise = this.persistTruthVerification(runRoot, record.runId);
+    this.truthRequests.set(key, promise);
+    promise.finally(() => {
+      if (this.truthRequests.get(key) === promise) {
+        this.truthRequests.delete(key);
+      }
+    });
+  }
+
+  private async persistTruthVerification(runRoot: string, runId: string): Promise<void> {
+    try {
+      const latest = this.readRecord(runRoot, runId);
+      if (latest.runnerExit === undefined) {
+        return;
+      }
+      const observed = {
+        ...latest,
+        observations: collectRunObservations(latest, this.clock.nowIso()),
+        truth: truthPending(this.clock.nowIso()),
+        updatedAt: this.clock.nowIso(),
+      };
+      this.writeRecord(observed);
+      const outcome = await this.truth.verifyExitedRun(observed);
+      const current = this.readRecord(runRoot, runId);
+      this.writeRecord({
+        ...current,
+        truth: truthFromOutcome(outcome, this.clock.nowIso()),
+        updatedAt: this.clock.nowIso(),
+        journal: appendJournal(current, this.clock, "truth_verification_completed", {
+          failureCodes: outcome.failures.map((failure) => failure.code),
+          verified: outcome.verified,
+        }),
+      });
+    } catch (error) {
+      try {
+        const current = this.readRecord(runRoot, runId);
+        this.writeRecord({
+          ...current,
+          truth: truthVerificationError(publicErrorMessage(error), this.clock.nowIso()),
+          updatedAt: this.clock.nowIso(),
+          journal: appendJournal(current, this.clock, "truth_verification_error", {
+            message: publicErrorMessage(error),
+          }),
+        });
+      } catch {
+        return;
+      }
+    }
   }
 
   private makeInitialRecord({
@@ -1175,11 +1492,13 @@ export class SpikeSupervisor {
       spendLedger: emptyLedger(defaultCapUsd, at),
       status: "starting",
       topic,
+      truth: truthUnavailable(at),
       updatedAt: at,
     };
   }
 
   private async reserveBudget({
+    approvedNoProviderProfile,
     dispatchId,
     identity,
     modelIds,
@@ -1188,6 +1507,7 @@ export class SpikeSupervisor {
     runId,
     runRoot,
   }: {
+    readonly approvedNoProviderProfile?: ApprovedNoProviderProfileRecord;
     readonly dispatchId: string;
     readonly identity: RunIdentity;
     readonly modelIds?: Partial<ModelIdMap>;
@@ -1201,6 +1521,20 @@ export class SpikeSupervisor {
       const at = this.clock.nowIso();
       const current = readLedger(ledgerPath, oracle?.capUsd ?? defaultCapUsd, at);
       try {
+        if (approvedNoProviderProfile !== undefined) {
+          if (oracle !== undefined || modelIds !== undefined) {
+            throw new SpikeSupervisorError(
+              "invalid_option",
+              "Approved no-provider runs cannot include model ids or provider cost oracles",
+            );
+          }
+          const next = summarizeLedger({
+            ...current,
+            updatedAt: at,
+          });
+          atomicWriteJson(ledgerPath, next);
+          return next;
+        }
         const reservations = this.planReservations({
           dispatchId,
           modelIds,
@@ -1396,6 +1730,9 @@ export class SpikeSupervisor {
     readonly runner: readonly string[];
   } {
     const pathEnv = readRequiredSourceValue(options.controlSourceEnv, "PATH");
+    if (options.approvedNoProviderProfile !== undefined) {
+      return this.buildNoProviderLaunch(options, paths, pathEnv);
+    }
     const opencode = this.executables.resolve(options.opencodeCommand, pathEnv);
     const runnerCommand = this.executables.resolve(options.waiRunCommand, pathEnv);
     const wrapper = executablePath(options.wrapperScriptPath, "OpenCode wrapper");
@@ -1453,6 +1790,61 @@ export class SpikeSupervisor {
     };
   }
 
+  private buildNoProviderLaunch(
+    options: SpikeStartOptions,
+    paths: {
+      readonly generationDir: string;
+      readonly home: string;
+      readonly runDir: string;
+      readonly runtimeAllowList: RuntimeAllowListRecord;
+      readonly tmpdir: string;
+    },
+    pathEnv: string,
+  ): {
+    readonly controlEnv: BuiltEnvironment;
+    readonly executorEnv: BuiltEnvironment;
+    readonly runner: readonly string[];
+  } {
+    if (options.approvedNoProviderProfile === undefined) {
+      throw new SpikeSupervisorError("invalid_option", "Missing approved no-provider profile");
+    }
+    if (
+      options.approvedNoProviderProfile.expectedEnvPath !== undefined &&
+      options.approvedNoProviderProfile.expectedEnvPath !== pathEnv
+    ) {
+      throw new SpikeSupervisorError(
+        "invalid_option",
+        "Approved no-provider profile PATH does not match the service control environment",
+        { expected: options.approvedNoProviderProfile.expectedEnvPath, observed: pathEnv },
+      );
+    }
+    const runnerCommand = this.executables.resolve(options.waiRunCommand, pathEnv);
+    const notify = executablePath(options.notifyScriptPath, "notify script");
+    const frozenRunnerEnv: Record<string, string> = {
+      SHOHIN_APPROVED_PROFILE_DIGEST: options.approvedNoProviderProfile.digest,
+      SHOHIN_APPROVED_PROFILE_ID: options.approvedNoProviderProfile.id,
+      SHOHIN_PROVIDER_ACCESS: "denied",
+      WAI_DAG_NOTIFY_CMD: notify,
+      WAI_SHOHIN_ATTENTION_LOG: path.join(paths.runDir, "attention.jsonl"),
+      WAI_SHOHIN_RUN_DIR: paths.runDir,
+    };
+    const executorSourceEnv = {
+      PATH: pathEnv,
+      ...frozenRunnerEnv,
+    } satisfies SourceEnvironment;
+    return {
+      controlEnv: buildControlEnvironment({ sourceEnv: options.controlSourceEnv }),
+      executorEnv: buildExecutorEnvironment({
+        envAllowList: paths.runtimeAllowList.env,
+        home: paths.home,
+        runnerEnvKeys: Object.keys(frozenRunnerEnv).sort(),
+        sourceEnv: executorSourceEnv,
+        tmpdir: paths.tmpdir,
+      }),
+      runner: [runnerCommand, path.join(paths.generationDir, requiredWaiBundleFiles.run), options.topic],
+    };
+  }
+
   private refreshHeartbeat(runDir: string): HeartbeatRecord {
     const heartbeatPath = path.join(runDir, "heartbeat.json");
     const heartbeat = {
@@ -1495,6 +1887,424 @@ export class SpikeSupervisor {
     return runRoot;
   }
 }
+
+const verifyApprovedNoProviderStartingIdentity = (
+  profile: ApprovedNoProviderProfileRecord | undefined,
+  identity: RunIdentity,
+): void => {
+  if (profile === undefined) {
+    return;
+  }
+  if (
+    profile.expectedCommonGitDir !== undefined &&
+    profile.expectedCommonGitDir !== identity.commonGitDir
+  ) {
+    throw new SpikeSupervisorError(
+      "invalid_option",
+      "Approved no-provider profile common Git directory does not match the target",
+      { expected: profile.expectedCommonGitDir, observed: identity.commonGitDir },
+    );
+  }
+  if (profile.expectedStartingHead !== undefined) {
+    const observed = git(identity.targetRepoRoot, ["rev-parse", "HEAD"]).toLowerCase();
+    if (observed !== profile.expectedStartingHead.toLowerCase()) {
+      throw new SpikeSupervisorError(
+        "invalid_option",
+        "Approved no-provider profile starting HEAD does not match the target",
+        { expected: profile.expectedStartingHead, observed },
+      );
+    }
+  }
+};
+
+const verifyApprovedNoProviderGeneration = (
+  profile: ApprovedNoProviderProfileRecord | undefined,
+  hashes: Readonly<Record<RequiredWaiBundleFile, string>>,
+): void => {
+  if (profile?.expectedGenerationHashes === undefined) {
+    return;
+  }
+  for (const key of Object.keys(requiredWaiBundleFiles) as RequiredWaiBundleFile[]) {
+    const expected = profile.expectedGenerationHashes[key];
+    const observed = hashes[key];
+    if (expected !== observed) {
+      throw new SpikeSupervisorError(
+        "invalid_option",
+        "Approved no-provider profile runner generation hash does not match the transformed bundle",
+        { expected, file: requiredWaiBundleFiles[key], observed },
+      );
+    }
+  }
+};
+
+const verifyApprovedNoProviderVerifier = (
+  profile: ApprovedNoProviderProfileRecord | undefined,
+  verifier: HistoricalVerifierRecord,
+): void => {
+  const expected = profile?.expectedVerifier;
+  if (expected === undefined) {
+    return;
+  }
+  const observed = {
+    gateScriptBasename: path.basename(verifier.gateScript),
+    gateTimeoutMs: verifier.gateTimeoutMs,
+    taskDirectory: verifier.taskDirectory,
+    testCommand: verifier.testCommand,
+    typecheckCommand: verifier.typecheckCommand,
+  };
+  for (const key of Object.keys(observed) as Array<keyof typeof observed>) {
+    if (expected[key] !== observed[key]) {
+      throw new SpikeSupervisorError(
+        "invalid_option",
+        "Approved no-provider profile verifier binding does not match runtime defaults",
+        { expected: expected[key], field: key, observed: observed[key] },
+      );
+    }
+  }
+};
+
+const verifyApprovedNoProviderLaunch = (
+  profile: ApprovedNoProviderProfileRecord | undefined,
+  runner: readonly string[],
+): void => {
+  if (profile === undefined) {
+    return;
+  }
+  const semanticArgv = [runner[0], path.basename(runner[1] ?? ""), runner[2] ?? ""];
+  if (
+    semanticArgv.length !== profile.expectedArgv.length ||
+    semanticArgv.some((entry, index) => entry !== profile.expectedArgv[index])
+  ) {
+    throw new SpikeSupervisorError(
+      "invalid_option",
+      "Approved no-provider profile argv does not match the resolved launch",
+      { expected: profile.expectedArgv, observed: semanticArgv },
+    );
+  }
+};
+
+const taskDirectoryForTopic = (topic: string): string => `docs/plans/${validateTopic(topic)}`;
+
+const pathEnvForControl = (sourceEnv: SourceEnvironment): string =>
+  readRequiredSourceValue(sourceEnv, "PATH");
+
+const truthUnavailable = (at: string): TruthVerificationRecord => ({
+  authoritative: true,
+  available: false,
+  state: "unavailable",
+  updatedAt: at,
+});
+
+const truthPending = (at: string): TruthVerificationRecord => ({
+  authoritative: true,
+  available: false,
+  state: "pending",
+  updatedAt: at,
+});
+
+const truthVerificationError = (message: string, at: string): TruthVerificationRecord => ({
+  authoritative: true,
+  available: false,
+  message,
+  state: "verification_error",
+  updatedAt: at,
+});
+
+const truthFromOutcome = (outcome: AuthoritativeOutcome, at: string): TruthVerificationRecord => ({
+  authoritative: true,
+  available: true,
+  failureCodes: outcome.failures.map((failure) => failure.code),
+  outcome,
+  state: outcome.verified ? "success" : "failure",
+  updatedAt: at,
+  verified: outcome.verified,
+});
+
+const truthNeedsVerification = (truth: TruthVerificationRecord | undefined): boolean =>
+  truth === undefined ||
+  truth.state === "pending" ||
+  truth.state === "unavailable" ||
+  truth.state === "verification_error";
+
+const publicRunSnapshot = (record: SpikeSupervisorRecord, at: string): SpikePublicRunSnapshot => {
+  const truth = record.truth ?? truthUnavailable(at);
+  const hints = record.observations?.hints ?? [];
+  return {
+    activity: runActivity(record.status),
+    hints: {
+      authoritative: false,
+      available: hints.length > 0,
+      items: hints,
+      source: "executor",
+      ...(record.observations === undefined ? {} : { updatedAt: record.observations.updatedAt }),
+    },
+    runId: record.runId,
+    status: record.status,
+    topic: record.topic,
+    truth,
+  };
+};
+
+const runActivity = (status: SpikeRunStatus): SpikePublicRunSnapshot["activity"] => {
+  switch (status) {
+    case "active":
+    case "recovered":
+    case "reserved":
+    case "starting":
+      return "active";
+    case "budget_refused":
+    case "canceled":
+    case "exited":
+    case "failed":
+    case "lost":
+      return "terminal";
+    case "unknown":
+      return "unknown";
+  }
+};
+
+const collectObservationBaseline = (
+  record: Pick<SpikeSupervisorRecord, "identity" | "runDir" | "topic">,
+  at: string,
+): RunObservationBaselineRecord => {
+  const topicDir = path.join(record.identity.targetRepoRoot, "docs", "plans", record.topic);
+  return {
+    capturedAt: at,
+    sources: {
+      dagPassedCommits: readObservationFile(path.join(topicDir, ".dag-passed-commits")).source,
+      notifyJsonl: readObservationFile(path.join(record.runDir, "attention.jsonl")).source,
+      runStateJson: readObservationFile(path.join(topicDir, ".wai-run-state.json")).source,
+    },
+  };
+};
+
+const collectRunObservations = (
+  record: SpikeSupervisorRecord,
+  at: string,
+): RunObservationRecord => {
+  const expectedTaskIds = record.verifier?.expectedTasks.map((task) => task.id) ?? [];
+  const topicDir = path.join(record.identity.targetRepoRoot, "docs", "plans", record.topic);
+  const notifyJsonl = discardUnchangedPrelaunchObservation(
+    readObservationFile(path.join(record.runDir, "attention.jsonl")),
+    record.observationBaseline?.sources.notifyJsonl,
+  );
+  const runStateJson = discardUnchangedPrelaunchObservation(
+    readObservationFile(path.join(topicDir, ".wai-run-state.json")),
+    record.observationBaseline?.sources.runStateJson,
+  );
+  const dagPassedCommits = discardUnchangedPrelaunchObservation(
+    readObservationFile(path.join(topicDir, ".dag-passed-commits")),
+    record.observationBaseline?.sources.dagPassedCommits,
+  );
+  const parsed = parseExecutorHints({
+    expectedRepoRoot: record.identity.targetRepoRoot,
+    expectedTaskIds,
+    expectedTopic: record.topic,
+    inputs: {
+      dagPassedCommits: dagPassedCommits.content,
+      notifyJsonl: notifyJsonl.content,
+      runStateJson: runStateJson.content,
+    },
+    maxBytes: maxObservationFileBytes,
+  });
+  const hints = annotateNativeRunIdChange(parsed.hints, record.observations?.hints);
+  return {
+    hints,
+    proposedTaskCommits: Object.fromEntries(
+      Object.entries(parsed.proposedTaskCommits).filter(([taskId]) =>
+        expectedTaskIds.includes(taskId),
+      ),
+    ),
+    sources: {
+      dagPassedCommits: dagPassedCommits.source,
+      notifyJsonl: notifyJsonl.source,
+      runStateJson: runStateJson.source,
+    },
+    updatedAt: at,
+  };
+};
+
+const discardUnchangedPrelaunchObservation = (
+  current: { readonly content?: string; readonly source: ObservationSourceRecord },
+  baseline: ObservationSourceRecord | undefined,
+): { readonly content?: string; readonly source: ObservationSourceRecord } => {
+  if (
+    current.source.status === "read" &&
+    baseline?.status === "read" &&
+    current.source.contentHash !== undefined &&
+    current.source.contentHash === baseline.contentHash
+  ) {
+    return {
+      source: {
+        ...current.source,
+        reason: "unchanged_from_prelaunch_snapshot",
+        status: "stale_prelaunch",
+      },
+    };
+  }
+  return current;
+};
+
+const annotateNativeRunIdChange = (
+  currentHints: readonly ExecutorHint[],
+  previousHints: readonly ExecutorHint[] | undefined,
+): readonly ExecutorHint[] => {
+  const previous = nativeRunIds(previousHints ?? []);
+  const current = nativeRunIds(currentHints);
+  if (previous.size === 0 || current.size === 0) {
+    return currentHints;
+  }
+  const changed = [...current].some((runId) => !previous.has(runId));
+  if (!changed) {
+    return currentHints;
+  }
+  return [
+    ...currentHints,
+    {
+      authoritative: false,
+      file: "run_state",
+      kind: "malformed",
+      raw: "native_run_id_changed",
+      reason: "native_run_id_changed",
+      runId: [...current].sort().join(","),
+      source: "executor",
+    },
+  ];
+};
+
+const nativeRunIds = (hints: readonly ExecutorHint[]): ReadonlySet<string> =>
+  new Set(
+    hints
+      .filter((hint) => hint.file === "run_state" && hint.runId !== undefined)
+      .map((hint) => hint.runId!),
+  );
+
+const readObservationFile = (
+  filePath: string,
+): { readonly content?: string; readonly source: ObservationSourceRecord } => {
+  const absolutePath = path.resolve(filePath);
+  try {
+    const stats = lstatSync(absolutePath);
+    if (!stats.isFile()) {
+      return {
+        source: { path: absolutePath, reason: "not_regular_file", status: "rejected" },
+      };
+    }
+    const fd = openSync(absolutePath, "r");
+    try {
+      const buffer = Buffer.alloc(maxObservationFileBytes + 1);
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+      const content = buffer.subarray(0, bytesRead).toString("utf-8");
+      return {
+        content,
+        source: {
+          bytesRead,
+          contentHash: `sha256:${sha256(Buffer.from(content, "utf-8"))}`,
+          path: absolutePath,
+          status: "read",
+        },
+      };
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return { source: { path: absolutePath, status: "absent" } };
+    }
+    return {
+      source: {
+        path: absolutePath,
+        reason: error instanceof Error ? error.message : String(error),
+        status: "rejected",
+      },
+    };
+  }
+};
+
+const verifyRecordAuthoritativeOutcome = (
+  record: SpikeSupervisorRecord,
+): AuthoritativeOutcome => {
+  if (record.verifier === undefined || record.runnerExit === undefined) {
+    return {
+      expectedTasks: record.verifier?.expectedTasks ?? [],
+      failures: [
+        {
+          code: "expected_tasks_unavailable",
+          message: "Frozen verifier inputs or trustworthy runner exit are unavailable",
+        },
+      ],
+      gateResults: [],
+      hints: record.observations?.hints ?? [],
+      manifestHash: record.verifier?.expectedManifestHash ?? "",
+      verified: false,
+    };
+  }
+  const observations = record.observations ?? collectRunObservations(record, record.updatedAt);
+  const taskCommits = discoverTaskCommits(record, observations.proposedTaskCommits);
+  return verifyAuthoritativeOutcome({
+    baselineCommit: record.identity.externalBaseline,
+    envPath: record.verifier.envPath,
+    executorHints: observations.hints,
+    expectedManifestHash: record.verifier.expectedManifestHash,
+    gateScript: record.verifier.gateScript,
+    gateTimeoutMs: record.verifier.gateTimeoutMs,
+    recordedBranchRef: record.verifier.recordedBranchRef,
+    repoRoot: record.identity.targetRepoRoot,
+    runnerExitStatus: record.runnerExit.status,
+    taskCommits,
+    taskDirectory: record.verifier.taskDirectory,
+    testCommand: record.verifier.testCommand,
+    topic: record.topic,
+    typecheckCommand: record.verifier.typecheckCommand,
+    verifierRoot: record.verifier.verifierRoot,
+  });
+};
+
+const discoverTaskCommits = (
+  record: SpikeSupervisorRecord,
+  proposedTaskCommits: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> => {
+  const discovered: Record<string, string> = {};
+  const verifier = record.verifier;
+  if (verifier === undefined) {
+    return proposedTaskCommits;
+  }
+  const result = spawnSync(
+    "git",
+    [
+      "log",
+      "--reverse",
+      "--format=%H%x00%s",
+      `${record.identity.externalBaseline}..${verifier.recordedBranchRef}`,
+    ],
+    {
+      cwd: record.identity.targetRepoRoot,
+      encoding: "utf-8",
+      env: { PATH: verifier.envPath },
+      shell: false,
+    },
+  );
+  if ((result.status ?? 0) !== 0) {
+    return proposedTaskCommits;
+  }
+  const expectedIds = new Set(verifier.expectedTasks.map((task) => task.id));
+  for (const line of String(result.stdout ?? "").split(/\r?\n/)) {
+    if (line.length === 0) {
+      continue;
+    }
+    const separator = line.indexOf("\0");
+    if (separator < 1) {
+      continue;
+    }
+    const commit = line.slice(0, separator).toLowerCase();
+    const subject = line.slice(separator + 1).trim();
+    const taskId = subject.match(/^dag-worker:\s*([A-Za-z0-9._-]+)$/)?.[1];
+    if (taskId !== undefined && expectedIds.has(taskId)) {
+      discovered[taskId] = commit;
+    }
+  }
+  return { ...proposedTaskCommits, ...discovered };
+};
 
 const applyReviewedObservabilityPatch = (generationDir: string): LaunchArtifacts => {
   const executorsPath = path.join(generationDir, requiredWaiBundleFiles.executors);
@@ -1612,6 +2422,7 @@ const waitForScopeExit = async (scopeHandle: ScopedRunHandle): Promise<ScopeWait
       status: 127,
       stderr: "[scope wait rejected before diagnostics could be collected]\n",
       stderrTruncated: false,
+      trusted: false,
     };
   }
 };
