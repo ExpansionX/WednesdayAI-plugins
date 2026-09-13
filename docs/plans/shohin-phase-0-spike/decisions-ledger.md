@@ -1,5 +1,10 @@
 # Decisions Ledger
 
+## Task 003 environment builder — 2026-09-13
+- Worker commit `6b2ab812c982d563548a7a5da65927d8e13765fd` adds the four declared files. The worker reports scoped Vitest (12 tests), nested typecheck, and the WAI task003 gate passed at that exact commit. Independent harness validation remains pending.
+- Explicit deny assertions cover absolute and parent-traversing HOME entries, symlinks, special files/directories, invalid topics, noncanonical or different-repository worktrees, credential-bearing executor/control inputs, executor bus variables, invalid runtime/bus addresses, and implicit process environment leakage. Positive cases cover contained mode-0700 HOME copies, same-common-directory worktrees, and distinct executor/control environment objects.
+- Immutable source defaults remain empty `home.allow` and PATH-only `env.allow`; no paid inner call occurred. Full worker evidence is in Zenith mission-001's work-003 attempt report. The orchestrator records this note because the worker's four-file scope excluded this ledger.
+
 ## Submission
 Plan accepted from submit envelope.
 
