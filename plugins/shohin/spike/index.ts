@@ -39,7 +39,7 @@ const commitPattern = /^[0-9a-f]{40}$/i;
 const recoveryPhase1TimeoutMs = 5_000;
 const defaultRunnerTimeoutSec = 30 * 60;
 const defaultHeartbeatPollIntervalMs = 250;
-const defaultHeartbeatStaleAfterMs = 5_000;
+const defaultHeartbeatStaleAfterMs = 60_000;
 const defaultWaiBundleSourceDir = "/home/david/.agents/wai/scripts";
 
 type ServiceReadiness = "recovering" | "ready" | "error";
@@ -89,6 +89,7 @@ const plugin = {
       id: serviceId,
       start: (ctx) => startService(state, ctx),
       stop: (ctx) => {
+        state.supervisor?.dispose();
         ctx.logger.info("shohin-spike.service.stop");
       },
     });

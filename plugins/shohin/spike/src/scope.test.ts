@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,6 +20,7 @@ import {
   type ScopeClock,
   type ScopeFilesystem,
   type ScopeProcessAdapter,
+  type ScopeWaitResult,
   type SpawnedCommand,
 } from "./scope.js";
 
@@ -37,8 +46,8 @@ class FakeSpawnedCommand implements SpawnedCommand {
     private readonly status: number,
   ) {}
 
-  public async wait(): Promise<number> {
-    return this.status;
+  public async wait(): Promise<ScopeWaitResult> {
+    return { status: this.status, stderr: "", stderrTruncated: false };
   }
 }
 
@@ -272,6 +281,29 @@ const baseLaunchOptions = () => ({
   topic: "shohin-phase-0-spike",
 });
 
+
+const makeWatchdogScriptFixture = (temp: string) => {
+  const runDir = path.join(temp, "run");
+  const fakeCgroupRoot = path.join(temp, "cgroup");
+  const fakeProc = path.join(temp, "self-cgroup");
+  const relativeGroup = "/user.slice/user-1000.slice/app.slice/shohin-test.scope";
+  const groupDir = path.join(fakeCgroupRoot, relativeGroup.slice(1));
+  const killFile = path.join(groupDir, "cgroup.kill");
+  mkdirSync(groupDir, { recursive: true });
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(fakeProc, `0::${relativeGroup}\n`);
+  writeFileSync(killFile, "");
+  return {
+    env: {
+      PATH: "/usr/bin:/bin",
+      WAI_SHOHIN_WATCHDOG_CGROUP_ROOT: fakeCgroupRoot,
+      WAI_SHOHIN_WATCHDOG_PROC_CGROUP: fakeProc,
+    },
+    killFile,
+    runDir,
+  };
+};
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -336,6 +368,43 @@ describe("Shohin systemd scope controller", () => {
         expect.stringMatching(/^DBUS_SESSION_BUS_ADDRESS=/),
       ]),
     );
+  });
+
+
+  it("captures bounded sanitized launcher stderr on the wait handle", async () => {
+    const temp = makeTempRoot("launcher-stderr");
+    const launcher = path.join(temp, "fake-systemd-run.sh");
+    const runDir = path.join(temp, "run");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      launcher,
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "printf 'OPENCLAW_GATEWAY_TOKEN=super-secret\\n' >&2",
+        "printf 'Bearer abc.def\\n' >&2",
+        "sleep 0.1",
+        "exit 42",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    chmodSync(launcher, 0o755);
+
+    const controller = createScopeController({ systemdRunCommand: launcher, watchdogPath });
+    const handle = await controller.launch({
+      ...baseLaunchOptions(),
+      heartbeat: { ...baseLaunchOptions().heartbeat, path: path.join(runDir, "heartbeat.json") },
+      runDir,
+    });
+    const result = await handle.wait();
+
+    expect(result.status).toBe(42);
+    expect(result.stderrTruncated).toBe(false);
+    expect(result.stderr).toContain("OPENCLAW_GATEWAY_TOKEN=[redacted]");
+    expect(result.stderr).toContain("Bearer [redacted]");
+    expect(result.stderr).not.toContain("super-secret");
+    expect(result.stderr).not.toContain("abc.def");
   });
 
   it("rejects probe-only controls unless explicit probe mode is enabled", async () => {
@@ -931,4 +1000,146 @@ describe("Shohin in-scope watchdog safety helpers", () => {
     expect(result.status).toBe(23);
     expect(result.stderr).toBe("");
   });
+
+  it("keeps a fresh heartbeat alive without relying on date width modifiers", () => {
+    const temp = makeTempRoot("watchdog-fresh");
+    const fixture = makeWatchdogScriptFixture(temp);
+    const heartbeat = path.join(fixture.runDir, "heartbeat.json");
+    const runner = path.join(temp, "runner.sh");
+    writeFileSync(heartbeat, "{}\n");
+    writeFileSync(
+      runner,
+      ["#!/usr/bin/env bash", "set -euo pipefail", "sleep 0.2", "exit 0", ""].join("\n"),
+      { mode: 0o600 },
+    );
+    chmodSync(runner, 0o755);
+
+    const result = spawnSync(
+      watchdogPath,
+      [
+        "--scope-id",
+        "shohin-test-fresh.scope",
+        "--run-dir",
+        fixture.runDir,
+        "--heartbeat",
+        heartbeat,
+        "--heartbeat-stale-ms",
+        "30000",
+        "--heartbeat-poll-ms",
+        "50",
+        "--probe-mode",
+        "--",
+        runner,
+      ],
+      {
+        encoding: "utf-8",
+        env: fixture.env,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(readFileSync(fixture.killFile, "utf-8")).toBe("");
+  });
+
+  it("kills on a genuinely stale heartbeat and reports comparable millisecond clocks", () => {
+    const temp = makeTempRoot("watchdog-stale");
+    const fixture = makeWatchdogScriptFixture(temp);
+    const heartbeat = path.join(fixture.runDir, "heartbeat.json");
+    const runner = path.join(temp, "runner.sh");
+    const runnerPid = path.join(temp, "runner.pid");
+    writeFileSync(heartbeat, "{}\n");
+    const old = new Date(Date.now() - 5_000);
+    utimesSync(heartbeat, old, old);
+    writeFileSync(
+      runner,
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "printf '%s\\n' \"$$\" > \"$1\"",
+        "sleep 10",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    chmodSync(runner, 0o755);
+
+    const result = spawnSync(
+      watchdogPath,
+      [
+        "--scope-id",
+        "shohin-test-stale.scope",
+        "--run-dir",
+        fixture.runDir,
+        "--heartbeat",
+        heartbeat,
+        "--heartbeat-stale-ms",
+        "1000",
+        "--heartbeat-poll-ms",
+        "50",
+        "--probe-mode",
+        "--",
+        runner,
+        runnerPid,
+      ],
+      {
+        encoding: "utf-8",
+        env: fixture.env,
+        timeout: 2_500,
+      },
+    );
+
+    try {
+      const pid = Number(readFileSync(runnerPid, "utf-8"));
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        process.kill(pid, "SIGKILL");
+      }
+    } catch {
+      // The fake cgroup.kill file cannot kill the child; cleanup is best-effort.
+    }
+
+    expect(result.status).toBe(124);
+    expect(result.stderr).toMatch(
+      /^watchdog\.sh: heartbeat stale now_ms=\d{13} mtime_ms=\d{13} age_ms=\d+ stale_ms=1000\n$/,
+    );
+    expect(result.stderr).not.toContain("%3N");
+    expect(readFileSync(fixture.killFile, "utf-8")).toBe("1\n");
+  });
+
+  it("rejects watchdog cgroup test overrides outside explicit probe mode", () => {
+    const temp = makeTempRoot("watchdog-override-denied");
+    const fixture = makeWatchdogScriptFixture(temp);
+    const heartbeat = path.join(fixture.runDir, "heartbeat.json");
+    const runner = path.join(temp, "runner.sh");
+    writeFileSync(heartbeat, "{}\n");
+    writeFileSync(runner, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o600 });
+    chmodSync(runner, 0o755);
+
+    const result = spawnSync(
+      watchdogPath,
+      [
+        "--scope-id",
+        "shohin-test-denied.scope",
+        "--run-dir",
+        fixture.runDir,
+        "--heartbeat",
+        heartbeat,
+        "--heartbeat-stale-ms",
+        "30000",
+        "--heartbeat-poll-ms",
+        "50",
+        "--",
+        runner,
+      ],
+      {
+        encoding: "utf-8",
+        env: fixture.env,
+      },
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("watchdog cgroup test overrides require explicit probe mode");
+    expect(readFileSync(fixture.killFile, "utf-8")).toBe("");
+  });
+
 });

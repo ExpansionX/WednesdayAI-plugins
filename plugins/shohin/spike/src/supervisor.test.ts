@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SpikeSupervisor,
   SpikeSupervisorError,
@@ -32,6 +32,7 @@ import type {
   ScopeController,
   ScopeIdentity,
   ScopeLaunchOptions,
+  ScopeWaitResult,
   ScopedRunHandle,
 } from "./scope.js";
 
@@ -62,6 +63,7 @@ class FakeScopeController implements ScopeController {
   public cancelLeavesIdentity = false;
   public cancelResult: ScopeCancelResult = { sentKill: false, sentTerm: true };
   public cancelWait: Promise<void> | undefined;
+  public launchWait: Promise<ScopeWaitResult> = new Promise<ScopeWaitResult>(() => undefined);
   public requireCancelIdentity = false;
 
   public async launch(options: ScopeLaunchOptions): Promise<ScopedRunHandle> {
@@ -74,7 +76,7 @@ class FakeScopeController implements ScopeController {
       controlPid: 4242,
       controlStartTime: "777",
       scopeId: this.identity.id,
-      wait: async () => 0,
+      wait: async () => this.launchWait,
     };
   }
 
@@ -242,6 +244,15 @@ const makePatch = (relativePath = "wai-dag-executors.sh"): ProbePatch => ({
     };
   },
 });
+
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+};
 
 const activeScopeIdentity = (): ScopeIdentity => ({
   controlGroup: "/user.slice/app.slice/shohin.scope",
@@ -878,6 +889,155 @@ describe("SpikeSupervisor", () => {
     expect(fixture.scope.cancels).toHaveLength(0);
     expect(readRecord(runRoot).status).toBe("active");
   });
+
+  it("refreshes active heartbeat every 10 seconds after verified start and does not duplicate on recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = makeTempRoot("heartbeat-maintenance");
+      mkdirSync(path.join(root, "source-home"), { recursive: true });
+      const fixture = makeSupervisor(root);
+      const { clock, scope, supervisor } = fixture;
+      await supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+      const runRoot = path.join(root, "run-data");
+      const before = scopeHeartbeat(runRoot, "run007");
+      const inspectionsAfterStart = scope.inspections.length;
+
+      clock.current = "2026-09-13T12:00:09.999Z";
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(scopeHeartbeat(runRoot, "run007")).toBe(before);
+
+      clock.current = "2026-09-13T12:00:10.000Z";
+      await vi.advanceTimersByTimeAsync(1);
+      expect(scopeHeartbeat(runRoot, "run007")).toBe("2026-09-13T12:00:10.000Z");
+      expect(scope.inspections).toHaveLength(inspectionsAfterStart + 1);
+      expect(readRecord(runRoot).journal.at(-1)?.event).toBe("maintenance_heartbeat_refreshed");
+
+      clock.current = "2026-09-13T12:00:12.000Z";
+      await supervisor.recover({ runRoot });
+      expect(scopeHeartbeat(runRoot, "run007")).toBe("2026-09-13T12:00:12.000Z");
+      const journalAfterRecovery = readRecord(runRoot).journal.length;
+
+      clock.current = "2026-09-13T12:00:20.000Z";
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(readRecord(runRoot).journal).toHaveLength(journalAfterRecovery);
+
+      clock.current = "2026-09-13T12:00:22.000Z";
+      await vi.advanceTimersByTimeAsync(2_000);
+      const events = readRecord(runRoot).journal.map((entry) => entry.event);
+      expect(events.filter((event) => event === "maintenance_heartbeat_refreshed")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disposes maintenance on cancel and service dispose without late heartbeat writes", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancelRoot = makeTempRoot("heartbeat-cancel");
+      mkdirSync(path.join(cancelRoot, "source-home"), { recursive: true });
+      const cancelFixture = makeSupervisor(cancelRoot);
+      await cancelFixture.supervisor.start(startOptions(cancelRoot, { costOracle: makeOracle(1) }));
+      const cancelRunRoot = path.join(cancelRoot, "run-data");
+      cancelFixture.clock.current = "2026-09-13T12:00:10.000Z";
+      await cancelFixture.supervisor.cancel("run007", cancelRunRoot);
+      const canceledHeartbeat = scopeHeartbeat(cancelRunRoot, "run007");
+      const canceledJournalLength = readRecord(cancelRunRoot).journal.length;
+
+      cancelFixture.clock.current = "2026-09-13T12:01:00.000Z";
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(scopeHeartbeat(cancelRunRoot, "run007")).toBe(canceledHeartbeat);
+      expect(readRecord(cancelRunRoot).journal).toHaveLength(canceledJournalLength);
+
+      const stopRoot = makeTempRoot("heartbeat-stop");
+      mkdirSync(path.join(stopRoot, "source-home"), { recursive: true });
+      const stopFixture = makeSupervisor(stopRoot);
+      await stopFixture.supervisor.start(startOptions(stopRoot, { costOracle: makeOracle(1) }));
+      const stopRunRoot = path.join(stopRoot, "run-data");
+      const activeHeartbeat = scopeHeartbeat(stopRunRoot, "run007");
+      stopFixture.supervisor.dispose();
+
+      stopFixture.clock.current = "2026-09-13T12:01:00.000Z";
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(scopeHeartbeat(stopRunRoot, "run007")).toBe(activeHeartbeat);
+      expect(readRecord(stopRunRoot).status).toBe("active");
+      expect(stopFixture.scope.cancels).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops maintenance and records unknown when an active scope can no longer be verified", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = makeTempRoot("heartbeat-unknown");
+      mkdirSync(path.join(root, "source-home"), { recursive: true });
+      const fixture = makeSupervisor(root);
+      await fixture.supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+      const runRoot = path.join(root, "run-data");
+      fixture.scope.identity = unknownScopeIdentity();
+      fixture.clock.current = "2026-09-13T12:00:10.000Z";
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      const unknownRecord = readRecord(runRoot);
+      expect(unknownRecord.status).toBe("unknown");
+      expect(unknownRecord.journal.at(-1)?.event).toBe("maintenance_failed");
+      const journalLength = unknownRecord.journal.length;
+
+      fixture.clock.current = "2026-09-13T12:01:00.000Z";
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(readRecord(runRoot).journal).toHaveLength(journalLength);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records sanitized scope wait exit without claiming success as truth", async () => {
+    const stoppedRoot = makeTempRoot("wait-stopped");
+    mkdirSync(path.join(stoppedRoot, "source-home"), { recursive: true });
+    const stoppedFixture = makeSupervisor(stoppedRoot);
+    const stoppedWait = deferred<ScopeWaitResult>();
+    stoppedFixture.scope.launchWait = stoppedWait.promise;
+    await stoppedFixture.supervisor.start(startOptions(stoppedRoot, { costOracle: makeOracle(1) }));
+    const stoppedRunRoot = path.join(stoppedRoot, "run-data");
+    stoppedFixture.scope.identity = stoppedScopeIdentity();
+    stoppedFixture.clock.current = "2026-09-13T12:00:01.000Z";
+    stoppedWait.resolve({
+      status: 137,
+      stderr: "watchdog.sh: heartbeat stale now_ms=1789326610000 mtime_ms=1789326600000 age_ms=10000 stale_ms=5000\n",
+      stderrTruncated: false,
+    });
+    await vi.waitFor(() => {
+      expect(readRecord(stoppedRunRoot).status).toBe("unknown");
+    });
+
+    const stoppedRecord = readRecord(stoppedRunRoot);
+    expect(stoppedRecord.scopeLaunchExit).toMatchObject({
+      status: 137,
+      stderrTruncated: false,
+    });
+    expect(stoppedRecord.scopeLaunchExit?.stderr).toContain("heartbeat stale");
+    expect(stoppedRecord.journal.at(-1)?.event).toBe("scope_wait_observed_stopped");
+
+    const activeRoot = makeTempRoot("wait-active");
+    mkdirSync(path.join(activeRoot, "source-home"), { recursive: true });
+    const activeFixture = makeSupervisor(activeRoot);
+    const activeWait = deferred<ScopeWaitResult>();
+    activeFixture.scope.launchWait = activeWait.promise;
+    await activeFixture.supervisor.start(startOptions(activeRoot, { costOracle: makeOracle(1) }));
+    const activeRunRoot = path.join(activeRoot, "run-data");
+    activeFixture.clock.current = "2026-09-13T12:00:02.000Z";
+    activeWait.resolve({ status: 143, stderr: "", stderrTruncated: false });
+    await vi.waitFor(() => {
+      expect(readRecord(activeRunRoot).scopeLaunchExit).toMatchObject({ status: 143 });
+    });
+
+    const activeRecord = readRecord(activeRunRoot);
+    expect(activeRecord.status).toBe("active");
+    expect(activeRecord.scopeLaunchExit).toMatchObject({ status: 143 });
+    expect(activeRecord.journal.at(-1)?.event).toBe("scope_wait_observed_active");
+    activeFixture.supervisor.dispose();
+  });
+
 });
 
 const scopeHeartbeat = (runRoot: string, runId: string): string =>

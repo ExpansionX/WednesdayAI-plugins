@@ -40,6 +40,7 @@ import {
   type ScopeCancelResult,
   type ScopeController,
   type ScopeIdentity,
+  type ScopeWaitResult,
   type ScopedRunHandle,
 } from "./scope.js";
 import {
@@ -82,6 +83,7 @@ export type SpikeSupervisorErrorCode =
   | "patch_not_closed"
   | "patch_unknown"
   | "record_unavailable"
+  | "scope_not_active"
   | "scope_not_stopped";
 
 export class SpikeSupervisorError extends Error {
@@ -234,6 +236,13 @@ export interface ScopeRecord {
   readonly scopeId: string;
 }
 
+export interface ScopeLaunchExitRecord {
+  readonly observedAt: string;
+  readonly status: number;
+  readonly stderr: string;
+  readonly stderrTruncated: boolean;
+}
+
 export interface JournalEntry {
   readonly at: string;
   readonly event: string;
@@ -254,6 +263,7 @@ export interface SpikeSupervisorRecord {
   readonly runnerGeneration?: RunnerGenerationRecord;
   readonly runtimeAllowList: RuntimeAllowListRecord;
   readonly scope?: ScopeRecord;
+  readonly scopeLaunchExit?: ScopeLaunchExitRecord;
   readonly spendLedger: DurableSpendLedger;
   readonly status: SpikeRunStatus;
   readonly topic: string;
@@ -344,7 +354,12 @@ const controlEnvironmentKeys = [
   "DBUS_SESSION_BUS_ADDRESS",
 ] as const;
 const allowedRecordedControlEnvironment = new Set<string>(controlEnvironmentKeys);
+const heartbeatRefreshIntervalMs = 10_000;
 
+interface ActiveRunMaintenance {
+  disposed: boolean;
+  timer?: NodeJS.Timeout;
+}
 
 const nodeClock: SpikeSupervisorClock = {
   nowIso: () => new Date().toISOString(),
@@ -462,6 +477,7 @@ export class SpikeSupervisor {
   private readonly executables: ExecutableResolver;
   private readonly cancelRequests = new Map<string, Promise<SpikeCancelResult>>();
   private readonly identity: SpikeIdentityAdapter;
+  private readonly maintenance = new Map<string, ActiveRunMaintenance>();
   private readonly runRoots = new Map<string, string>();
   private readonly scope: ScopeController;
   private readonly truth: SpikeTruthAdapter;
@@ -619,6 +635,13 @@ export class SpikeSupervisor {
         topic,
       });
       const scopeIdentity = await this.scope.inspect(scopeHandle.scopeId, scopeHandle.controlEnv);
+      if (!scopeIdentityIsRunning(scopeIdentity)) {
+        throw new SpikeSupervisorError(
+          "scope_not_active",
+          `Scope ${scopeHandle.scopeId} was not running after launch`,
+          { runId, scopeId: scopeHandle.scopeId },
+        );
+      }
       const activeRecord = this.readRecord(runRoot, runId);
       const finalRecord: SpikeSupervisorRecord = {
         ...activeRecord,
@@ -640,6 +663,7 @@ export class SpikeSupervisor {
         }),
       };
       this.writeRecord(finalRecord);
+      this.attachActiveMaintenance(finalRecord, scopeHandle);
       return {
         maxAttemptsNote: finalRecord.maxAttemptsNote,
         record: finalRecord,
@@ -706,6 +730,7 @@ export class SpikeSupervisor {
         );
         if (!scopeIdentityIsRunning(scopeIdentity)) {
           verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+          this.disposeRunMaintenance(runRoot, runId);
           this.activeTopics.delete(record.topic);
           this.writeRecord({
             ...record,
@@ -724,6 +749,7 @@ export class SpikeSupervisor {
           journal: appendJournal(record, this.clock, "recovery_heartbeat_refreshed"),
         };
         this.writeRecord(updated);
+        this.attachActiveMaintenance(updated);
         refreshedActiveRunIds.push(runId);
         continue;
       }
@@ -792,6 +818,7 @@ export class SpikeSupervisor {
     const result = await this.scope.cancel(handle);
     await this.verifyScopeStoppedBeforeTerminalPersistence(record, controlEnv);
     const alreadyStopped = !result.sentKill && !result.sentTerm;
+    this.disposeRunMaintenance(runRoot, runId);
     this.activeTopics.delete(record.topic);
     this.writeRecord({
       ...record,
@@ -849,6 +876,7 @@ export class SpikeSupervisor {
         readRecordedControlEnvironment(record),
       );
     }
+    this.disposeRunMaintenance(runRoot, runId);
     this.activeTopics.delete(record.topic);
     this.writeRecord({
       ...record,
@@ -866,6 +894,7 @@ export class SpikeSupervisor {
     const runRoot = this.resolveRunRoot(runId, runRootInput);
     const record = this.readRecord(runRoot, runId);
     if (terminalStatuses.has(status)) {
+      this.disposeRunMaintenance(runRoot, runId);
       this.activeTopics.delete(record.topic);
     }
     this.writeRecord({
@@ -874,6 +903,244 @@ export class SpikeSupervisor {
       updatedAt: this.clock.nowIso(),
       journal: appendJournal(record, this.clock, "status_overridden", { status }),
     });
+  }
+
+  public dispose(): void {
+    for (const key of [...this.maintenance.keys()]) {
+      this.disposeMaintenanceKey(key);
+    }
+    this.activeTopics.clear();
+  }
+
+  private attachActiveMaintenance(
+    record: SpikeSupervisorRecord,
+    scopeHandle?: ScopedRunHandle,
+  ): void {
+    const runRoot = runRootForRecord(record);
+    const key = maintenanceKey(runRoot, record.runId);
+    if (this.maintenance.has(key)) {
+      return;
+    }
+    const entry: ActiveRunMaintenance = { disposed: false };
+    this.maintenance.set(key, entry);
+    this.activeTopics.add(record.topic);
+    this.scheduleHeartbeatRefresh(entry, runRoot, record.runId);
+    if (scopeHandle !== undefined) {
+      this.observeScopeExit(entry, runRoot, record.runId, scopeHandle);
+    }
+  }
+
+  private scheduleHeartbeatRefresh(
+    entry: ActiveRunMaintenance,
+    runRoot: string,
+    runId: string,
+  ): void {
+    entry.timer = setTimeout(() => {
+      void this.refreshMaintainedHeartbeat(entry, runRoot, runId);
+    }, heartbeatRefreshIntervalMs);
+    entry.timer.unref?.();
+  }
+
+  private async refreshMaintainedHeartbeat(
+    entry: ActiveRunMaintenance,
+    runRoot: string,
+    runId: string,
+  ): Promise<void> {
+    if (entry.disposed) {
+      return;
+    }
+    try {
+      const record = this.readRecord(runRoot, runId);
+      if (record.status !== "active") {
+        this.disposeRunMaintenance(runRoot, runId);
+        return;
+      }
+      if (record.scope === undefined) {
+        throw new SpikeSupervisorError(
+          "record_unavailable",
+          `Active run ${runId} is missing scope identity`,
+        );
+      }
+      const controlEnv = readRecordedControlEnvironment(record);
+      await this.identity.verifyActiveRunIdentity(record);
+      const scopeIdentity = await this.scope.inspect(
+        record.scope.scopeId,
+        controlEnv,
+        record.scope.identity,
+      );
+      if (!scopeIdentityIsRunning(scopeIdentity)) {
+        verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+        if (!entry.disposed) {
+          this.markActiveRunUnknown(runRoot, runId, "maintenance_scope_stopped_without_exit");
+        }
+        return;
+      }
+      verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+      if (entry.disposed) {
+        return;
+      }
+      const current = this.readRecord(runRoot, runId);
+      if (current.status !== "active" || current.scope === undefined) {
+        this.disposeRunMaintenance(runRoot, runId);
+        return;
+      }
+      const heartbeat = this.refreshHeartbeat(current.runDir);
+      this.writeRecord({
+        ...current,
+        heartbeat,
+        scope: {
+          ...current.scope,
+          identity: scopeIdentity,
+        },
+        updatedAt: heartbeat.refreshedAt,
+        journal: appendJournal(current, this.clock, "maintenance_heartbeat_refreshed"),
+      });
+    } catch (error) {
+      if (!entry.disposed) {
+        this.markActiveRunUnknown(runRoot, runId, "maintenance_failed", {
+          message: publicErrorMessage(error),
+        });
+      }
+      return;
+    } finally {
+      if (!entry.disposed) {
+        this.scheduleHeartbeatRefresh(entry, runRoot, runId);
+      }
+    }
+  }
+
+  private observeScopeExit(
+    entry: ActiveRunMaintenance,
+    runRoot: string,
+    runId: string,
+    scopeHandle: ScopedRunHandle,
+  ): void {
+    void (async () => {
+      const exit = await waitForScopeExit(scopeHandle);
+      if (entry.disposed) {
+        return;
+      }
+      let record: SpikeSupervisorRecord;
+      try {
+        record = this.readRecord(runRoot, runId);
+      } catch {
+        this.disposeRunMaintenance(runRoot, runId);
+        return;
+      }
+      if (record.status !== "active") {
+        this.disposeRunMaintenance(runRoot, runId);
+        return;
+      }
+      const scopeLaunchExit = scopeLaunchExitRecord(exit, this.clock.nowIso());
+      if (record.scope === undefined) {
+        this.writeRecord({
+          ...record,
+          scopeLaunchExit,
+          status: "unknown",
+          updatedAt: scopeLaunchExit.observedAt,
+          journal: appendJournal(record, this.clock, "scope_wait_observed_without_scope", {
+            status: exit.status,
+            stderrTruncated: exit.stderrTruncated,
+          }),
+        });
+        this.activeTopics.delete(record.topic);
+        this.disposeRunMaintenance(runRoot, runId);
+        return;
+      }
+      try {
+        const controlEnv = readRecordedControlEnvironment(record);
+        const scopeIdentity = await this.scope.inspect(
+          record.scope.scopeId,
+          controlEnv,
+          record.scope.identity,
+        );
+        if (scopeIdentityIsRunning(scopeIdentity)) {
+          verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+          if (entry.disposed) {
+            return;
+          }
+          const current = this.readRecord(runRoot, runId);
+          if (current.status !== "active" || current.scope === undefined) {
+            this.disposeRunMaintenance(runRoot, runId);
+            return;
+          }
+          this.writeRecord({
+            ...current,
+            scope: {
+              ...current.scope,
+              identity: scopeIdentity,
+            },
+            scopeLaunchExit,
+            updatedAt: scopeLaunchExit.observedAt,
+            journal: appendJournal(current, this.clock, "scope_wait_observed_active", {
+              status: exit.status,
+              stderrTruncated: exit.stderrTruncated,
+            }),
+          });
+          return;
+        }
+        verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+        if (!entry.disposed) {
+          this.markActiveRunUnknown(runRoot, runId, "scope_wait_observed_stopped", {
+            scopeLaunchExit,
+          });
+        }
+      } catch (error) {
+        if (!entry.disposed) {
+          this.markActiveRunUnknown(runRoot, runId, "scope_wait_observed_unknown", {
+            message: publicErrorMessage(error),
+            scopeLaunchExit,
+          });
+        }
+      }
+    })();
+  }
+
+  private markActiveRunUnknown(
+    runRoot: string,
+    runId: string,
+    event: string,
+    detail?: Readonly<Record<string, unknown>>,
+  ): void {
+    let record: SpikeSupervisorRecord;
+    try {
+      record = this.readRecord(runRoot, runId);
+    } catch {
+      this.disposeRunMaintenance(runRoot, runId);
+      return;
+    }
+    if (record.status !== "active") {
+      this.disposeRunMaintenance(runRoot, runId);
+      return;
+    }
+    const scopeLaunchExit = isScopeLaunchExitRecord(detail?.scopeLaunchExit)
+      ? detail.scopeLaunchExit
+      : record.scopeLaunchExit;
+    this.writeRecord({
+      ...record,
+      ...(scopeLaunchExit === undefined ? {} : { scopeLaunchExit }),
+      status: "unknown",
+      updatedAt: this.clock.nowIso(),
+      journal: appendJournal(record, this.clock, event, detail),
+    });
+    this.activeTopics.delete(record.topic);
+    this.disposeRunMaintenance(runRoot, runId);
+  }
+
+  private disposeRunMaintenance(runRoot: string, runId: string): void {
+    this.disposeMaintenanceKey(maintenanceKey(runRoot, runId));
+  }
+
+  private disposeMaintenanceKey(key: string): void {
+    const entry = this.maintenance.get(key);
+    if (entry === undefined) {
+      return;
+    }
+    entry.disposed = true;
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+    }
+    this.maintenance.delete(key);
   }
 
   private makeInitialRecord({
@@ -1332,6 +1599,44 @@ const isStringRecord = (value: unknown): value is Readonly<Record<string, string
   value !== null &&
   !Array.isArray(value) &&
   Object.values(value).every((entry) => typeof entry === "string");
+
+const publicErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const waitForScopeExit = async (scopeHandle: ScopedRunHandle): Promise<ScopeWaitResult> => {
+  try {
+    return await scopeHandle.wait();
+  } catch (error) {
+    return {
+      status: 127,
+      stderr: publicErrorMessage(error),
+      stderrTruncated: false,
+    };
+  }
+};
+
+const scopeLaunchExitRecord = (
+  exit: ScopeWaitResult,
+  observedAt: string,
+): ScopeLaunchExitRecord => ({
+  observedAt,
+  status: exit.status,
+  stderr: exit.stderr,
+  stderrTruncated: exit.stderrTruncated,
+});
+
+const isScopeLaunchExitRecord = (value: unknown): value is ScopeLaunchExitRecord =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as ScopeLaunchExitRecord).observedAt === "string" &&
+  typeof (value as ScopeLaunchExitRecord).status === "number" &&
+  typeof (value as ScopeLaunchExitRecord).stderr === "string" &&
+  typeof (value as ScopeLaunchExitRecord).stderrTruncated === "boolean";
+
+const runRootForRecord = (record: SpikeSupervisorRecord): string =>
+  path.dirname(record.runDir);
+
+const maintenanceKey = (runRoot: string, runId: string): string => `${runRoot}\u0000${runId}`;
 
 const appendJournal = (
   record: SpikeSupervisorRecord,

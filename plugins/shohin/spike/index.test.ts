@@ -42,6 +42,7 @@ const supervisorMockState = vi.hoisted(() => {
     cancelImpl: undefined as undefined | ((runId: string, runRoot?: string) => Promise<unknown>),
     instances: [] as Array<{
       cancel: Mock;
+      dispose: Mock;
       recover: Mock;
       start: Mock;
     }>,
@@ -50,6 +51,8 @@ const supervisorMockState = vi.hoisted(() => {
   };
 
   class FakeSpikeSupervisor {
+    public readonly dispose = vi.fn();
+
     public readonly cancel = vi.fn(async (runId: string, runRoot?: string) => {
       if (state.cancelImpl) {
         return state.cancelImpl(runId, runRoot);
@@ -380,6 +383,20 @@ describe("Shohin spike plugin registration", () => {
     expect(serviceLogger.info).toHaveBeenCalledWith("shohin-spike.recovery.phase1.ready");
   });
 
+
+  it("disposes supervisor maintenance on service stop without changing readiness", async () => {
+    const ready = await registerReadyPlugin();
+    const logger = makeLogger();
+
+    ready.services[0].stop?.(serviceContext(ready.stateDir, logger));
+
+    expect(ready.supervisor.dispose).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith("shohin-spike.service.stop");
+    const status = await invoke(ready.methods.get("shohinSpike.status")!, {});
+    expect(status.ok).toBe(true);
+    expect(status.payload).toMatchObject({ service: { status: "ready" } });
+  });
+
   it("reports service errors and does not swallow malformed closed config", async () => {
     const repoRoot = makeGitRepo("bad-config");
     const stateDir = makeTempRoot("state");
@@ -462,6 +479,27 @@ describe("Shohin spike plugin registration", () => {
       expect(response.error).toMatchObject({ code: "INVALID_REQUEST" });
     }
     expect(ready.supervisor.start).not.toHaveBeenCalled();
+  });
+
+
+  it("uses the normal 60 second heartbeat stale default when run options omit it", async () => {
+    const ready = await registerReadyPlugin();
+    const root = makeTempRoot("default-heartbeat");
+    const options = validOptions(root);
+    delete options.heartbeatStaleAfterMs;
+
+    const response = await invoke(ready.methods.get("shohinSpike.run")!, {
+      options,
+      repoRoot: ready.repoRoot,
+      topic: "topic008",
+    });
+
+    expect(response.ok).toBe(true);
+    expect(ready.supervisor.start).toHaveBeenCalledTimes(1);
+    expect(ready.supervisor.start.mock.calls[0][0]).toMatchObject({
+      heartbeatPollIntervalMs: 250,
+      heartbeatStaleAfterMs: 60_000,
+    });
   });
 
   it("accepts linked target roots by delegating common-dir identity to the supervisor and never waits for DAG completion", async () => {

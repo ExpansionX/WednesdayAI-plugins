@@ -27,6 +27,12 @@ strace_execve=0
 record_setsid=0
 disable_watchdog=0
 setsid_pid=""
+watchdog_cgroup_root="${WAI_SHOHIN_WATCHDOG_CGROUP_ROOT:-/sys/fs/cgroup}"
+watchdog_proc_cgroup="${WAI_SHOHIN_WATCHDOG_PROC_CGROUP:-/proc/self/cgroup}"
+heartbeat_now_ms=""
+heartbeat_mtime_ms=""
+heartbeat_age_ms=""
+heartbeat_reason="not_checked"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -114,6 +120,20 @@ if [ "$probe_mode" -ne 1 ] && {
 }; then
   fail_usage "probe-only controls require explicit probe mode"
 fi
+if [ "$probe_mode" -ne 1 ] && {
+  [ "${WAI_SHOHIN_WATCHDOG_CGROUP_ROOT+x}" = x ] ||
+    [ "${WAI_SHOHIN_WATCHDOG_PROC_CGROUP+x}" = x ]
+}; then
+  fail_usage "watchdog cgroup test overrides require explicit probe mode"
+fi
+case "$watchdog_cgroup_root" in
+  /*) ;;
+  *) fail_usage "watchdog cgroup root must be absolute" ;;
+esac
+case "$watchdog_proc_cgroup" in
+  /*) ;;
+  *) fail_usage "watchdog proc cgroup path must be absolute" ;;
+esac
 
 install -d -m 700 "$run_dir"
 chmod 700 "$run_dir"
@@ -162,11 +182,11 @@ derive_cgroup_kill_file() {
         case "$rel" in
           *..*|*" "*|*"	"*) fail_closed "unsafe unified cgroup path" ;;
         esac
-        printf '/sys/fs/cgroup%s/cgroup.kill\n' "$rel"
+        printf '%s%s/cgroup.kill\n' "$watchdog_cgroup_root" "$rel"
         return 0
         ;;
     esac
-  done </proc/self/cgroup
+  done <"$watchdog_proc_cgroup"
   fail_closed "unified cgroup-v2 entry missing"
 }
 
@@ -177,13 +197,43 @@ ensure_cgroup_kill_file() {
 }
 
 heartbeat_is_fresh() {
-  [ -f "$heartbeat" ] || return 1
-  local now_ms mtime_s mtime_ms age_ms
-  now_ms="$(date +%s%3N)"
-  mtime_s="$(stat -c %Y "$heartbeat")" || return 1
-  mtime_ms=$((mtime_s * 1000))
-  age_ms=$((now_ms - mtime_ms))
-  [ "$age_ms" -le "$stale_ms" ]
+  if [ ! -f "$heartbeat" ]; then
+    heartbeat_reason="missing"
+    return 1
+  fi
+
+  local now_s mtime_s
+  now_s="$(date +%s)" || {
+    heartbeat_reason="date_failed"
+    return 1
+  }
+  case "$now_s" in
+    ''|*[!0-9]*)
+      heartbeat_reason="date_invalid"
+      return 1
+      ;;
+  esac
+
+  mtime_s="$(stat -c %Y "$heartbeat")" || {
+    heartbeat_reason="stat_failed"
+    return 1
+  }
+  case "$mtime_s" in
+    ''|*[!0-9]*)
+      heartbeat_reason="stat_invalid"
+      return 1
+      ;;
+  esac
+
+  heartbeat_now_ms=$((now_s * 1000))
+  heartbeat_mtime_ms=$((mtime_s * 1000))
+  heartbeat_age_ms=$((heartbeat_now_ms - heartbeat_mtime_ms))
+  if [ "$heartbeat_age_ms" -le "$stale_ms" ]; then
+    heartbeat_reason="fresh"
+    return 0
+  fi
+  heartbeat_reason="stale"
+  return 1
 }
 
 sleep_poll_interval() {
@@ -228,6 +278,12 @@ while kill -0 "$runner_pid" 2>/dev/null; do
     sleep_poll_interval
     continue
   fi
+  printf 'watchdog.sh: heartbeat %s now_ms=%s mtime_ms=%s age_ms=%s stale_ms=%s\n' \
+    "$heartbeat_reason" \
+    "${heartbeat_now_ms:-unknown}" \
+    "${heartbeat_mtime_ms:-unknown}" \
+    "${heartbeat_age_ms:-unknown}" \
+    "$stale_ms" >&2
   printf '1\n' >"$kill_file" || fail_closed "write failed for $kill_file"
   exit 124
 done

@@ -46,7 +46,13 @@ export interface CommandExecutionOptions {
 
 export interface SpawnedCommand {
   readonly pid: number;
-  wait(): Promise<number>;
+  wait(): Promise<ScopeWaitResult>;
+}
+
+export interface ScopeWaitResult {
+  readonly status: number;
+  readonly stderr: string;
+  readonly stderrTruncated: boolean;
 }
 
 export interface CommandAdapter {
@@ -115,7 +121,7 @@ export interface ScopeCancelHandle {
 export interface ScopedRunHandle extends ScopeCancelHandle {
   readonly argv: readonly string[];
   readonly command: string;
-  wait(): Promise<number>;
+  wait(): Promise<ScopeWaitResult>;
 }
 
 export interface ScopeCancelOptions {
@@ -193,6 +199,7 @@ const defaultCancelKillAfterMs = 2_000;
 const defaultCancelPollIntervalMs = 50;
 const maxRuntimeMaxSec = 30 * 60;
 const maxCancelKillAfterMs = 30_000;
+const maxLaunchStderrBytes = 8_192;
 
 const signalExitStatus = (signal: NodeJS.Signals | null): number => {
   switch (signal) {
@@ -215,7 +222,7 @@ const nodeCommandAdapter: CommandAdapter = {
       cwd: options.cwd,
       env: { ...options.env },
       shell: false,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
     });
     if (child.pid === undefined) {
       throw new ScopeControllerError(
@@ -223,10 +230,31 @@ const nodeCommandAdapter: CommandAdapter = {
         `Failed to spawn ${command}: missing child pid`,
       );
     }
-    const wait = new Promise<number>((resolve) => {
-      child.once("error", () => resolve(127));
+    const stderr = createBoundedStderrBuffer();
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      stderr.append(chunk);
+    });
+    const wait = new Promise<ScopeWaitResult>((resolve) => {
+      let settled = false;
+      const settle = (status: number, extraStderr = "") => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (extraStderr.length > 0) {
+          stderr.append(extraStderr);
+        }
+        resolve({
+          status,
+          stderr: sanitizeLaunchStderr(stderr.content()),
+          stderrTruncated: stderr.truncated(),
+        });
+      };
+      child.once("error", (error) => {
+        settle(127, error instanceof Error ? error.message : String(error));
+      });
       child.once("close", (code, signal) => {
-        resolve(code ?? signalExitStatus(signal));
+        settle(code ?? signalExitStatus(signal));
       });
     });
     return {
@@ -262,6 +290,44 @@ const nodeCommandAdapter: CommandAdapter = {
     });
   },
 };
+
+const createBoundedStderrBuffer = () => {
+  const chunks: string[] = [];
+  let bytes = 0;
+  let truncated = false;
+  return {
+    append(chunk: Buffer | string) {
+      if (truncated) {
+        return;
+      }
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+      const nextBytes = Buffer.byteLength(text);
+      if (bytes + nextBytes <= maxLaunchStderrBytes) {
+        chunks.push(text);
+        bytes += nextBytes;
+        return;
+      }
+      const remaining = Math.max(0, maxLaunchStderrBytes - bytes);
+      if (remaining > 0) {
+        chunks.push(Buffer.from(text).subarray(0, remaining).toString("utf-8"));
+      }
+      bytes = maxLaunchStderrBytes;
+      truncated = true;
+    },
+    content: () => chunks.join(""),
+    truncated: () => truncated,
+  };
+};
+
+const sanitizeLaunchStderr = (stderr: string): string =>
+  stderr
+    .replace(/\0/g, "")
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, "?")
+    .replace(
+      /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|API_KEY|AUTH)[A-Z0-9_]*)=([^\s]+)/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/gi, "$1 [redacted]");
 
 const nodeFilesystem: ScopeFilesystem = {
   readTextFile(filePath) {
