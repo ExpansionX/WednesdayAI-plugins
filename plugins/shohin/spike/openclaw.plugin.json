@@ -1,0 +1,14 @@
+{
+  "id": "shohin-spike",
+  "name": "Shohin Phase 0 Spike",
+  "description": "Disposable supervisor package for the Shohin Phase 0 empirical spike.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "repoRoot": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "@wednesdayai/shohin-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Disposable Shohin Phase 0 spike supervisor for WednesdayAI.",
+  "type": "module",
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "src",
+    "scripts",
+    "home.allow",
+    "env.allow"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0",
+    "wednesdayai": "file:/data/Code/WednesdayAI-core"
+  },
+  "wednesdayai": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
