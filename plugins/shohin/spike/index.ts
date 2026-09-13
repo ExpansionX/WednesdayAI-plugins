@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -15,6 +15,9 @@ import {
   validateTopic,
   type SourceEnvironment,
 } from "./src/environment.js";
+import {
+  resolveApprovedNoProviderProfile,
+} from "./src/profile-registry.js";
 import type { ScopeProbeOptions } from "./src/scope.js";
 import {
   SpikeSupervisor,
@@ -22,7 +25,7 @@ import {
   type ModelCostOracle,
   type ModelIdMap,
   type SpikeRecoverResult,
-  type SpikeRunStatus,
+  type SpikePublicRunSnapshot,
   type SpikeStartOptions,
 } from "./src/supervisor.js";
 
@@ -240,6 +243,7 @@ const readRunRequest = (
     options,
     [
       "controlEnv",
+      "approvedProfileId",
       "costOracle",
       "externalBaseline",
       "generationId",
@@ -260,13 +264,60 @@ const readRunRequest = (
     "run options",
   );
   const probeForwarding = readProbeForwarding(options);
+  const approvedProfileId = readOptionalComponent(options.approvedProfileId, "approvedProfileId");
   const maxAttempts = readOptionalInteger(options.maxAttempts, "maxAttempts", 1, 1, 1);
-
-  return {
+  const shared = {
     assessorScriptPath: path.join(packageRoot, "scripts", "orchestrator-abort.sh"),
     controlSourceEnv: readControlEnv(options.controlEnv),
-    costOracle: readCostOracle(options.costOracle),
     envAllowListPath: path.join(packageRoot, "env.allow"),
+    homeAllowListPath: path.join(packageRoot, "home.allow"),
+    notifyScriptPath: path.join(packageRoot, "scripts", "notify.sh"),
+    opencodeCommand: readOptionalString(options.opencodeCommand, "opencodeCommand", "opencode")!,
+    registeredRepoRoot: runtime.repoRoot,
+    reportAppendScriptPath: path.join(packageRoot, "scripts", "report-append.sh"),
+    runRoot: readOptionalAbsolutePath(options.runRoot, "runRoot", runtime.runRoot),
+    topic,
+    wrapperScriptPath: path.join(packageRoot, "scripts", "opencode-wrapper.sh"),
+    ...probeForwarding,
+  } satisfies Partial<SupervisorStartInput> & Pick<
+    SupervisorStartInput,
+    | "assessorScriptPath"
+    | "controlSourceEnv"
+    | "envAllowListPath"
+    | "homeAllowListPath"
+    | "notifyScriptPath"
+    | "opencodeCommand"
+    | "registeredRepoRoot"
+    | "reportAppendScriptPath"
+    | "runRoot"
+    | "topic"
+    | "wrapperScriptPath"
+  >;
+
+  if (approvedProfileId !== undefined) {
+    rejectNoProviderSubstitutions(options);
+    if (probeForwarding.probeMode !== true) {
+      throw new RpcInputError("Approved no-provider profiles require explicit probeMode=true");
+    }
+    const approved = resolveApprovedNoProviderProfile({
+      profileId: approvedProfileId,
+      request: {
+        generationId: readOptionalComponent(options.generationId, "generationId"),
+        runId: readOptionalComponent(options.runId, "runId"),
+        targetRepoRoot,
+        topic,
+      },
+    });
+    return {
+      ...shared,
+      ...approved,
+      runRoot: shared.runRoot,
+    };
+  }
+
+  return {
+    ...shared,
+    costOracle: readCostOracle(options.costOracle),
     externalBaseline: readCommit(options.externalBaseline, "externalBaseline"),
     generationId: readOptionalComponent(options.generationId, "generationId"),
     heartbeatPollIntervalMs: readOptionalInteger(
@@ -283,15 +334,9 @@ const readRunRequest = (
       1,
       3_600_000,
     ),
-    homeAllowListPath: path.join(packageRoot, "home.allow"),
     maxAttempts,
     modelIds: readModelIds(options.modelIds),
-    notifyScriptPath: path.join(packageRoot, "scripts", "notify.sh"),
-    opencodeCommand: readOptionalString(options.opencodeCommand, "opencodeCommand", "opencode")!,
-    registeredRepoRoot: runtime.repoRoot,
-    reportAppendScriptPath: path.join(packageRoot, "scripts", "report-append.sh"),
     runId: readOptionalComponent(options.runId, "runId"),
-    runRoot: readOptionalAbsolutePath(options.runRoot, "runRoot", runtime.runRoot),
     runnerTimeoutSec: readOptionalInteger(
       options.runnerTimeoutSec,
       "runnerTimeoutSec",
@@ -308,9 +353,33 @@ const readRunRequest = (
       defaultWaiBundleSourceDir,
     ),
     waiRunCommand: readOptionalString(options.waiRunCommand, "waiRunCommand", "bash")!,
-    wrapperScriptPath: path.join(packageRoot, "scripts", "opencode-wrapper.sh"),
     ...probeForwarding,
   };
+};
+
+const rejectNoProviderSubstitutions = (options: Record<string, unknown>): void => {
+  const forbidden = [
+    "controlEnv",
+    "costOracle",
+    "externalBaseline",
+    "heartbeatPollIntervalMs",
+    "heartbeatStaleAfterMs",
+    "maxAttempts",
+    "modelIds",
+    "opencodeCommand",
+    "probes",
+    "runRoot",
+    "runnerTimeoutSec",
+    "sourceHome",
+    "waiBundleSourceDir",
+    "waiRunCommand",
+  ];
+  const present = forbidden.find((key) => options[key] !== undefined);
+  if (present !== undefined) {
+    throw new RpcInputError(
+      `Approved no-provider profile cannot be combined with caller supplied ${present}`,
+    );
+  }
 };
 
 const readStatusRequest = (rawParams: unknown): { readonly runId?: string } => {
@@ -328,21 +397,22 @@ const readCancelRequest = (rawParams: unknown): { readonly runId: string } => {
 const readRunSnapshot = (
   state: RuntimeState,
   runId: string,
-): {
-  readonly hints: { readonly authoritative: false; readonly source: "executor" };
-  readonly runId: string;
-  readonly status: SpikeRunStatus | "unknown";
-  readonly topic?: string;
-  readonly truth: { readonly authoritative: true; readonly available: false };
-} => {
-  const record = readDurableRecord(state.runRoot, runId);
-  return {
-    hints: { authoritative: false, source: "executor" },
-    runId,
-    status: readKnownStatus(record?.status),
-    ...(typeof record?.topic === "string" ? { topic: record.topic } : {}),
-    truth: { authoritative: true, available: false },
-  };
+): SpikePublicRunSnapshot => {
+  if (state.supervisor === undefined || state.runRoot === undefined) {
+    return {
+      activity: "unknown",
+      hints: { authoritative: false, available: false, items: [], source: "executor" },
+      runId,
+      status: "unknown",
+      truth: {
+        authoritative: true,
+        available: false,
+        state: "unavailable",
+        updatedAt: new Date().toISOString(),
+      },
+    };
+  }
+  return state.supervisor.readRunSnapshot(runId, state.runRoot);
 };
 
 const serviceSnapshot = (state: RuntimeState) => ({
@@ -353,43 +423,6 @@ const serviceSnapshot = (state: RuntimeState) => ({
   status: state.readiness,
   ...(state.error === undefined ? {} : { error: state.error }),
 });
-
-const readDurableRecord = (
-  runRoot: string | undefined,
-  runId: string,
-): Record<string, unknown> | undefined => {
-  if (runRoot === undefined) {
-    return undefined;
-  }
-  const recordPath = path.join(runRoot, runId, "run.json");
-  if (!existsSync(recordPath)) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(recordPath, "utf-8")) as unknown;
-    return isPlainObject(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-const readKnownStatus = (value: unknown): SpikeRunStatus | "unknown" => {
-  const statuses = new Set<SpikeRunStatus>([
-    "active",
-    "budget_refused",
-    "canceled",
-    "exited",
-    "failed",
-    "lost",
-    "recovered",
-    "reserved",
-    "starting",
-    "unknown",
-  ]);
-  return typeof value === "string" && statuses.has(value as SpikeRunStatus)
-    ? (value as SpikeRunStatus)
-    : "unknown";
-};
 
 const readProbeForwarding = (options: Record<string, unknown>): ProbeForwarding => {
   const probeMode = readOptionalBoolean(options.probeMode, "probeMode", false);

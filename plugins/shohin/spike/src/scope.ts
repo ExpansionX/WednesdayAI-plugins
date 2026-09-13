@@ -53,6 +53,7 @@ export interface ScopeWaitResult {
   readonly status: number;
   readonly stderr: string;
   readonly stderrTruncated: boolean;
+  readonly trusted?: boolean;
 }
 
 export interface CommandAdapter {
