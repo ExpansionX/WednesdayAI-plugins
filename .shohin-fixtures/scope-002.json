@@ -1,0 +1,10 @@
+{
+  "fixture": "shohin-r7",
+  "requiredOutputs": [
+    {
+      "content": "completed success fixture task 002\n",
+      "path": "docs/plans/r7-success-20260914t133618/outputs/002.txt"
+    }
+  ],
+  "task": "002"
+}
