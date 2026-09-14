@@ -16,7 +16,7 @@ try {
 } catch (error) {
   fail(String(error));
 }
-if (parsed.fixture !== 'shohin-r5' || typeof parsed.task !== 'string') {
+if (parsed.fixture !== 'shohin-r6' || typeof parsed.task !== 'string') {
   fail('scope fixture did not match reviewed schema');
 }
 const outputs = Array.isArray(parsed.requiredOutputs) ? parsed.requiredOutputs : [];
