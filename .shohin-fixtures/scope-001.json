@@ -1,0 +1,10 @@
+{
+  "fixture": "shohin-r8",
+  "requiredOutputs": [
+    {
+      "content": "completed lifecycle fixture task 001\n",
+      "path": "docs/plans/r8-lifecycle-hold-20260914t141200/outputs/001.txt"
+    }
+  ],
+  "task": "001"
+}
