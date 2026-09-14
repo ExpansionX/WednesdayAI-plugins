@@ -80,6 +80,16 @@ const writeTaskFile = (
   );
 };
 
+const writeMarkdown = (
+  repoRoot: string,
+  relativePath: string,
+  content: string,
+): void => {
+  const filePath = path.join(repoRoot, relativePath);
+  mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  writeFileSync(filePath, content, { mode: 0o600 });
+};
+
 const writeFakeGate = (
   root: string,
   gateLog: string,
@@ -399,6 +409,73 @@ describe("Shohin executor hint parsing", () => {
 });
 
 describe("Shohin committed task manifest authority", () => {
+  it("enumerates only committed phase task files and ignores supporting topic markdown", () => {
+    const root = makeTempRoot("manifest-boundary");
+    const repoRoot = path.join(root, "repo");
+    mkdirSync(repoRoot, { recursive: true, mode: 0o700 });
+    git(repoRoot, ["init", "--initial-branch=main"]);
+    git(repoRoot, ["config", "user.email", "shohin@example.invalid"]);
+    git(repoRoot, ["config", "user.name", "Shohin Test"]);
+    writeTaskFile(repoRoot, "001", "first task\n");
+    writeTaskFile(repoRoot, "002", "second task\n");
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/plan.md",
+      "# Plan\n",
+    );
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/decisions-ledger.md",
+      "# Decisions\n",
+    );
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/phase-1-summary.md",
+      "# Phase summary\n",
+    );
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/phase-1/README.md",
+      "# Phase 1\n",
+    );
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/reviews/review.md",
+      "# Review\n",
+    );
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/reports/report.md",
+      "# Report\n",
+    );
+    const baseline = commitAll(repoRoot, "baseline with supporting docs");
+
+    const manifest = enumerateExpectedTaskManifest({
+      baselineCommit: baseline,
+      repoRoot,
+      taskDirectory: "docs/plans/shohin-phase-0-spike",
+    });
+    const phaseManifest = enumerateExpectedTaskManifest({
+      baselineCommit: baseline,
+      repoRoot,
+      taskDirectory: "docs/plans/shohin-phase-0-spike/phase-1",
+    });
+
+    expect(manifest.tasks.map((task) => task.id)).toEqual(["001", "002"]);
+    expect(manifest.tasks.map((task) => task.path)).toEqual([
+      "docs/plans/shohin-phase-0-spike/phase-1/001-task.md",
+      "docs/plans/shohin-phase-0-spike/phase-1/002-task.md",
+    ]);
+    expect(manifest.hash).toBe(phaseManifest.hash);
+    expect(manifest).toEqual(
+      enumerateExpectedTaskManifest({
+        baselineCommit: baseline,
+        repoRoot,
+        taskDirectory: "docs/plans/shohin-phase-0-spike",
+      }),
+    );
+  });
+
   it("derives expected ids from committed baseline task files and ignores uncommitted task files", () => {
     const fixture = makeFixtureRepo("manifest");
     writeTaskFile(fixture.repoRoot, "003", "uncommitted must not count");
@@ -411,6 +488,83 @@ describe("Shohin committed task manifest authority", () => {
 
     expect(manifest.tasks.map((task) => task.id)).toEqual(["001", "002"]);
     expect(manifest.hash).toBe(fixture.manifestHash);
+  });
+
+  it("fails closed when no committed phase task files exist under the topic", () => {
+    const root = makeTempRoot("manifest-no-tasks");
+    const repoRoot = path.join(root, "repo");
+    mkdirSync(repoRoot, { recursive: true, mode: 0o700 });
+    git(repoRoot, ["init", "--initial-branch=main"]);
+    git(repoRoot, ["config", "user.email", "shohin@example.invalid"]);
+    git(repoRoot, ["config", "user.name", "Shohin Test"]);
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/plan.md",
+      "# Plan\n",
+    );
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/decisions-ledger.md",
+      "# Decisions\n",
+    );
+    const baseline = commitAll(repoRoot, "supporting docs only");
+
+    expect(() =>
+      enumerateExpectedTaskManifest({
+        baselineCommit: baseline,
+        repoRoot,
+        taskDirectory: "docs/plans/shohin-phase-0-spike",
+      }),
+    ).toThrow(/Baseline did not contain committed task files/);
+  });
+
+  it("rejects malformed committed phase task files", () => {
+    const root = makeTempRoot("manifest-malformed-task");
+    const repoRoot = path.join(root, "repo");
+    mkdirSync(repoRoot, { recursive: true, mode: 0o700 });
+    git(repoRoot, ["init", "--initial-branch=main"]);
+    git(repoRoot, ["config", "user.email", "shohin@example.invalid"]);
+    git(repoRoot, ["config", "user.name", "Shohin Test"]);
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/phase-1/001-malformed.md",
+      "---\ntitle: Missing id\n---\n",
+    );
+    const baseline = commitAll(repoRoot, "malformed true task");
+
+    expect(() =>
+      enumerateExpectedTaskManifest({
+        baselineCommit: baseline,
+        repoRoot,
+        taskDirectory: "docs/plans/shohin-phase-0-spike",
+      }),
+    ).toThrow(
+      /Committed task file lacks a valid id: docs\/plans\/shohin-phase-0-spike\/phase-1\/001-malformed\.md/,
+    );
+  });
+
+  it("rejects duplicate committed phase task ids across phase files", () => {
+    const root = makeTempRoot("manifest-duplicates");
+    const repoRoot = path.join(root, "repo");
+    mkdirSync(repoRoot, { recursive: true, mode: 0o700 });
+    git(repoRoot, ["init", "--initial-branch=main"]);
+    git(repoRoot, ["config", "user.email", "shohin@example.invalid"]);
+    git(repoRoot, ["config", "user.name", "Shohin Test"]);
+    writeTaskFile(repoRoot, "001", "first task\n");
+    writeMarkdown(
+      repoRoot,
+      "docs/plans/shohin-phase-0-spike/phase-2/001-duplicate.md",
+      "---\nid: \"001\"\nphase: 2\ntitle: Duplicate\n---\n",
+    );
+    const baseline = commitAll(repoRoot, "duplicate true task ids");
+
+    expect(() =>
+      enumerateExpectedTaskManifest({
+        baselineCommit: baseline,
+        repoRoot,
+        taskDirectory: "docs/plans/shohin-phase-0-spike",
+      }),
+    ).toThrow(/Duplicate committed task id: 001/);
   });
 
   it("fails closed when the external baseline cannot provide committed tasks", () => {

@@ -267,7 +267,7 @@ export const enumerateExpectedTaskManifest = ({
   const taskPaths = listing.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line.endsWith(".md"))
+    .filter((line) => isCommittedPhaseTaskPath(line, taskDirectory))
     .sort();
   if (taskPaths.length === 0) {
     throw new Error("Baseline did not contain committed task files");
@@ -858,6 +858,51 @@ const boundContent = (
     return { text: content, truncated: false };
   }
   return { text: content.slice(0, maxBytes), truncated: true };
+};
+
+const phaseDirectoryPattern = /^phase-[1-9][0-9]*$/;
+const phaseTaskFileNamePattern = /^[0-9]{3,}-[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
+
+const normalizeGitPath = (input: string): string =>
+  input
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((segment) => segment.length > 0 && segment !== ".")
+    .join("/");
+
+const relativeGitPath = (taskPath: string, taskDirectory: string): string => {
+  const normalizedTaskPath = normalizeGitPath(taskPath);
+  const normalizedTaskDirectory = normalizeGitPath(taskDirectory);
+  if (normalizedTaskDirectory.length === 0) {
+    return normalizedTaskPath;
+  }
+  const prefix = `${normalizedTaskDirectory}/`;
+  return normalizedTaskPath.startsWith(prefix)
+    ? normalizedTaskPath.slice(prefix.length)
+    : normalizedTaskPath;
+};
+
+const isCommittedPhaseTaskPath = (taskPath: string, taskDirectory: string): boolean => {
+  if (!taskPath.endsWith(".md")) {
+    return false;
+  }
+  const relativePath = relativeGitPath(taskPath, taskDirectory);
+  const segments = relativePath.split("/");
+  if (segments.length === 1) {
+    const directoryName = path.posix.basename(normalizeGitPath(taskDirectory));
+    return (
+      phaseDirectoryPattern.test(directoryName) &&
+      phaseTaskFileNamePattern.test(segments[0] ?? "")
+    );
+  }
+  if (segments.length === 2) {
+    const [phaseDirectory, fileName] = segments;
+    return (
+      phaseDirectoryPattern.test(phaseDirectory ?? "") &&
+      phaseTaskFileNamePattern.test(fileName ?? "")
+    );
+  }
+  return false;
 };
 
 const parseTaskId = (content: string): string | undefined => {
