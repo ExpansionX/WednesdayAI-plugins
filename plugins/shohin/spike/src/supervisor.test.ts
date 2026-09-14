@@ -22,6 +22,7 @@ import {
   type LaunchArtifacts,
   type ModelCostOracle,
   type ProbePatch,
+  type ApprovedNoProviderProfileRecord,
   type RunIdentity,
   type SpikeSupervisorClock,
   type SpikeSupervisorDependencies,
@@ -429,6 +430,25 @@ const readRecord = (runRoot: string, runId = "run007"): SpikeSupervisorRecord =>
   JSON.parse(
     readFileSync(path.join(runRoot, runId, "run.json"), "utf-8"),
   ) as SpikeSupervisorRecord;
+
+const approvedNoProviderProfileForFixture = (
+  fixture: ReturnType<typeof makeSupervisor>,
+  overrides: Partial<ApprovedNoProviderProfileRecord> = {},
+): ApprovedNoProviderProfileRecord => {
+  const manifest = enumerateExpectedTaskManifest({
+    baselineCommit: fixture.identity.identity!.externalBaseline,
+    repoRoot: fixture.targetRoot,
+    taskDirectory: "docs/plans/shohin-phase-0-spike",
+  });
+  return {
+    classification: "zero-provider",
+    digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    expectedArgv: ["/resolved/bash", "wai-dag-run.sh", "shohin-phase-0-spike"],
+    expectedManifestHash: manifest.hash,
+    id: "approved-profile",
+    ...overrides,
+  };
+};
 
 const cloneLaunchOptions = (options: ScopeLaunchOptions): ScopeLaunchOptions => ({
   ...options,
@@ -1354,6 +1374,113 @@ describe("SpikeSupervisor", () => {
     expect(fixture.scope.inspections).toHaveLength(1);
     expect(fixture.scope.cancels).toHaveLength(0);
     expect(readRecord(runRoot).status).toBe("active");
+  });
+
+  it("terminalizes valid prelaunch starting records on cancel without fabricating truth", async () => {
+    const root = makeTempRoot("prelaunch-cancel");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const { clock, scope, supervisor } = fixture;
+    const runRoot = path.join(root, "run-data");
+
+    await expect(
+      supervisor.start(
+        startOptions(root, {
+          approvedNoProviderProfile: approvedNoProviderProfileForFixture(fixture, {
+            expectedEnvPath: "/tmp/shadow:/usr/bin:/bin",
+          }),
+          costOracle: undefined,
+          modelIds: undefined,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "invalid_option",
+    });
+
+    const starting = readRecord(runRoot);
+    expect(starting.status).toBe("starting");
+    expect(starting.scope).toBeUndefined();
+    expect(starting.runnerGeneration).toBeDefined();
+    expect(starting.verifier?.envPath).toBe("/usr/bin:/bin");
+    expect(starting.journal.map((entry) => entry.event)).toEqual([
+      "start_requested",
+      "runner_generation_ready",
+    ]);
+    expect(starting.truth).toMatchObject({ available: false, state: "unavailable" });
+
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    clock.current = "2026-09-13T12:00:05.000Z";
+    await expect(restartedSupervisor.cancel("run007", runRoot)).resolves.toEqual({
+      alreadyStopped: false,
+      runId: "run007",
+    });
+
+    const canceled = readRecord(runRoot);
+    expect(canceled.status).toBe("canceled");
+    expect(canceled.scope).toBeUndefined();
+    expect(canceled.runnerExit).toBeUndefined();
+    expect(canceled.truth).toMatchObject({ available: false, state: "unavailable" });
+    expect(canceled.journal.at(-1)).toMatchObject({
+      detail: { reason: "prelaunch_refusal_no_scope" },
+      event: "prelaunch_cancel_requested",
+    });
+    expect(scope.cancels).toHaveLength(0);
+    expect(restartedSupervisor.readRunSnapshot("run007", runRoot)).toMatchObject({
+      activity: "terminal",
+      status: "canceled",
+      truth: { available: false, state: "unavailable" },
+    });
+
+    const journalLength = canceled.journal.length;
+    clock.current = "2026-09-13T12:00:06.000Z";
+    await expect(restartedSupervisor.cancel("run007", runRoot)).resolves.toEqual({
+      alreadyStopped: true,
+      runId: "run007",
+    });
+    expect(readRecord(runRoot).journal).toHaveLength(journalLength);
+  });
+
+  it("does not treat arbitrary active records without scope as prelaunch cancellation proof", async () => {
+    const root = makeTempRoot("active-missing-scope-cancel");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    await fixture.supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+
+    const runRoot = path.join(root, "run-data");
+    const recordPath = path.join(runRoot, "run007", "run.json");
+    const activeRecord = readRecord(runRoot);
+    const activeWithoutScope = { ...activeRecord };
+    delete (activeWithoutScope as { scope?: unknown }).scope;
+    writeFileSync(recordPath, JSON.stringify(activeWithoutScope, null, 2));
+
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    await expect(restartedSupervisor.cancel("run007", runRoot)).resolves.toEqual({
+      alreadyStopped: true,
+      runId: "run007",
+    });
+    expect(fixture.scope.cancels).toHaveLength(0);
+    const current = readRecord(runRoot);
+    expect(current.status).toBe("active");
+    expect(current.scope).toBeUndefined();
+    expect(current.journal).toHaveLength(activeWithoutScope.journal.length);
+  });
+
+  it("leaves terminal records unchanged on cancel", async () => {
+    const root = makeTempRoot("terminal-cancel");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    await fixture.supervisor.start(startOptions(root, { costOracle: makeOracle(1) }));
+
+    const runRoot = path.join(root, "run-data");
+    await fixture.supervisor.cancel("run007", runRoot);
+    const terminalRecord = readRecord(runRoot);
+
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    await expect(restartedSupervisor.cancel("run007", runRoot)).resolves.toEqual({
+      alreadyStopped: true,
+      runId: "run007",
+    });
+    expect(readRecord(runRoot)).toEqual(terminalRecord);
   });
 
   it("refreshes active heartbeat every 10 seconds after verified start and does not duplicate on recovery", async () => {

@@ -458,6 +458,17 @@ const terminalStatuses = new Set<SpikeRunStatus>([
   "recovered",
   "unknown",
 ]);
+const prelaunchCancelBlockedJournalEvents = new Set([
+  "budget_reserved",
+  "cancel_already_stopped",
+  "cancel_requested",
+  "prelaunch_cancel_requested",
+  "runner_exit_observed",
+  "scope_launched",
+  "scope_wait_observed_active",
+  "scope_wait_observed_without_scope",
+  "status_overridden",
+]);
 const controlEnvironmentKeys = [
   "PATH",
   "XDG_RUNTIME_DIR",
@@ -993,6 +1004,21 @@ export class SpikeSupervisor {
   ): Promise<SpikeCancelResult> {
     const record = this.readRecord(runRoot, runId);
     if (record.status !== "active" || record.scope === undefined) {
+      if (isCancelablePrelaunchRefusalRecord(record)) {
+        this.disposeRunMaintenance(runRoot, runId);
+        this.activeTopics.delete(record.topic);
+        const at = this.clock.nowIso();
+        this.writeRecord({
+          ...record,
+          status: "canceled",
+          truth: record.truth ?? truthUnavailable(at),
+          updatedAt: at,
+          journal: appendJournal(record, this.clock, "prelaunch_cancel_requested", {
+            reason: "prelaunch_refusal_no_scope",
+          }),
+        });
+        return { alreadyStopped: false, runId };
+      }
       return { alreadyStopped: true, runId };
     }
     const controlEnv = readRecordedControlEnvironment(record);
@@ -1887,6 +1913,30 @@ export class SpikeSupervisor {
     return runRoot;
   }
 }
+
+const isCancelablePrelaunchRefusalRecord = (record: SpikeSupervisorRecord): boolean => {
+  if (
+    record.status !== "starting" ||
+    record.scope !== undefined ||
+    record.noProviderProfile === undefined ||
+    record.runnerGeneration === undefined ||
+    record.verifier === undefined ||
+    record.runnerExit !== undefined ||
+    record.scopeLaunchExit !== undefined ||
+    record.truth === undefined ||
+    record.truth.available ||
+    record.truth.state !== "unavailable"
+  ) {
+    return false;
+  }
+  const events = record.journal.map((entry) => entry.event);
+  const startIndex = events.indexOf("start_requested");
+  const generationReadyIndex = events.lastIndexOf("runner_generation_ready");
+  if (startIndex < 0 || generationReadyIndex <= startIndex) {
+    return false;
+  }
+  return events.every((event) => !prelaunchCancelBlockedJournalEvents.has(event));
+};
 
 const verifyApprovedNoProviderStartingIdentity = (
   profile: ApprovedNoProviderProfileRecord | undefined,
