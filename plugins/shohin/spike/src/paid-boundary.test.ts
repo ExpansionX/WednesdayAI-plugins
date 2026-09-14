@@ -131,7 +131,7 @@ const postChat = async (baseUrl: string, body: unknown, init: RequestInit = {}) 
 });
 
 const validBody = () => ({
-  max_tokens: 20_000,
+  max_completion_tokens: 20_000,
   messages: [{ content: "hello", role: "user" }],
   model: "grok-4.6",
 });
@@ -155,13 +155,18 @@ describe("xAI paid spend boundary", () => {
     const policy = makePolicy(root, upstream.baseUrl);
     const boundary = await startBoundary(root, policy);
 
-    const response = await postChat(boundary.baseUrl, validBody());
+    const serialized = JSON.stringify(validBody());
+    const response = await postChat(boundary.baseUrl, serialized);
 
     expect(response.status).toBe(200);
     expect(upstream.requests).toHaveLength(1);
     const forwarded = upstream.requests[0] as { readonly url: string; readonly body: string };
     expect(forwarded.url).toBe("/v1/chat/completions");
-    expect(JSON.parse(forwarded.body)).toMatchObject({ max_tokens: 20_000, model: "grok-4.6" });
+    expect(forwarded.body).toBe(serialized);
+    expect(JSON.parse(forwarded.body)).toMatchObject({
+      max_completion_tokens: 20_000,
+      model: "grok-4.6",
+    });
     expect(JSON.parse(readFileSync(path.join(root, "state.json"), "utf-8"))).toMatchObject({
       forwardedCount: 1,
       inFlight: 0,
@@ -179,7 +184,7 @@ describe("xAI paid spend boundary", () => {
       ["wrong route", () => fetch(`${boundary.baseUrl}/responses`, { method: "POST" }), "route_not_allowed"],
       ["wrong model", () => postChat(boundary.baseUrl, { ...validBody(), model: "grok-4.5" }), "model_not_allowed"],
       ["missing limit", () => postChat(boundary.baseUrl, { messages: [], model: "grok-4.6" }), "output_limit_missing"],
-      ["malformed limit", () => postChat(boundary.baseUrl, { ...validBody(), max_tokens: 20_001 }), "output_limit_malformed"],
+      ["malformed limit", () => postChat(boundary.baseUrl, { ...validBody(), max_completion_tokens: 20_001 }), "output_limit_malformed"],
       ["tools", () => postChat(boundary.baseUrl, { ...validBody(), tools: [{ type: "web_search" }] }), "server_side_tools_denied"],
       ["oversized", () => postChat(boundary.baseUrl, JSON.stringify({ ...validBody(), prompt: "x".repeat(101_000) })), "serialized_body_too_large"],
     ];
@@ -188,6 +193,55 @@ describe("xAI paid spend boundary", () => {
       const response = await request();
       expect(response.status).toBeGreaterThanOrEqual(400);
       await expect(response.json()).resolves.toMatchObject({ reason });
+    }
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it("rejects ambiguous, noncanonical, duplicate and forged output-limit fields before upstream dispatch", async () => {
+    const root = makeTempRoot("paid-boundary-limit-aliases");
+    const upstream = await startFakeUpstream();
+    const policy = makePolicy(root, upstream.baseUrl);
+    const boundary = await startBoundary(root, policy);
+
+    const cases: Array<readonly [string, unknown]> = [
+      ["legacy max_tokens only", { messages: [], model: "grok-4.6", max_tokens: 20_000 }],
+      ["safe canonical with unsafe legacy", { ...validBody(), max_tokens: 20_001 }],
+      ["unsafe canonical with safe legacy", { ...validBody(), max_completion_tokens: 20_001, max_tokens: 20 }],
+      ["equal canonical and legacy", { ...validBody(), max_tokens: 20_000 }],
+      ["null legacy with canonical", { ...validBody(), max_tokens: null }],
+      ["unsupported snake alias", { ...validBody(), max_output_tokens: 20_000 }],
+      ["unsupported camel alias", { ...validBody(), maxOutputTokens: 20_000 }],
+      ["unsupported generation alias", { ...validBody(), max_new_tokens: 20_000 }],
+      ["unsupported token-limit alias", { ...validBody(), outputTokenLimit: 20_000 }],
+      ["nested forged legacy", { ...validBody(), provider_options: { xai: { max_tokens: 20_001 } } }],
+      ["nested forged canonical", { ...validBody(), metadata: { max_completion_tokens: 1 } }],
+      ["duplicate canonical keys equal", `{"model":"grok-4.6","messages":[],"max_completion_tokens":20000,"max_completion_tokens":20000}`],
+      ["duplicate canonical keys unsafe then safe", `{"model":"grok-4.6","messages":[],"max_completion_tokens":20001,"max_completion_tokens":20}`],
+      ["duplicate escaped legacy keys", `{"model":"grok-4.6","messages":[],"max_\u0074okens":20,"max_\u0074okens":20}`],
+    ];
+
+    for (const [_name, body] of cases) {
+      const response = await postChat(boundary.baseUrl, body);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ reason: "output_limit_ambiguous" });
+    }
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it("rejects malformed canonical output-limit values before upstream dispatch", async () => {
+    const root = makeTempRoot("paid-boundary-limit-values");
+    const upstream = await startFakeUpstream();
+    const policy = makePolicy(root, upstream.baseUrl);
+    const boundary = await startBoundary(root, policy);
+
+    const cases = [null, 0, "20000", 20_000.5, -1];
+    for (const limit of cases) {
+      const response = await postChat(boundary.baseUrl, {
+        ...validBody(),
+        max_completion_tokens: limit,
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ reason: "output_limit_malformed" });
     }
     expect(upstream.requests).toHaveLength(0);
   });
@@ -249,7 +303,7 @@ describe("xAI paid spend boundary", () => {
     const boundary = await startBoundary(root, policy);
 
     const refusal = await postChat(boundary.baseUrl, {
-      max_tokens: 20_000,
+      max_completion_tokens: 20_000,
       messages: [{ content: "SUPER_SECRET_PROMPT", role: "user" }],
       model: "grok-4.5",
     }, { headers: { authorization: "Bearer secret-token-for-redaction", "content-type": "application/json" } });

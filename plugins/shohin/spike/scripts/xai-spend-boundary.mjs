@@ -37,6 +37,39 @@ const serverSideToolKeys = new Set([
   "web_search_options",
   "x_search",
 ]);
+const canonicalOutputLimitKey = "max_completion_tokens";
+const outputLimitFieldKeys = new Set([
+  canonicalOutputLimitKey,
+  "completionTokens",
+  "completion_tokens",
+  "maxCompletionTokens",
+  "maxGeneratedTokens",
+  "maxNewTokens",
+  "maxOutputTokens",
+  "maxResponseTokens",
+  "maxTokens",
+  "max_completion_token",
+  "max_generated_tokens",
+  "max_new_tokens",
+  "max_output_tokens",
+  "max_response_tokens",
+  "max_tokens",
+  "max_tokens_to_sample",
+  "outputTokens",
+  "output_limit",
+  "output_tokens",
+  "responseTokens",
+  "response_tokens",
+  "token_limit",
+]);
+const outputLimitFieldPatterns = [
+  /^max(?:completion|generated|generation|new|output|response)?tokens?$/,
+  /^max(?:completion|output|response)?length$/,
+  /^max(?:tokens?to(?:generate|sample))$/,
+  /^(?:completion|generated|generation|new|output|response)tokens?(?:limit)?$/,
+  /^tokens?(?:limit|to(?:generate|sample))$/,
+  /^num(?:output|predict)$/,
+];
 
 const policyPath = process.argv[2];
 if (!policyPath) {
@@ -121,14 +154,15 @@ const handleRequest = async (policy, request, response) => {
   }
 
   const bodySha256 = sha256(body);
+  const rawBody = body.toString("utf-8");
   let parsed;
   try {
-    parsed = JSON.parse(body.toString("utf-8"));
+    parsed = JSON.parse(rawBody);
   } catch {
     await rejectRequest(policy, response, 400, "json_malformed", { bodySha256 });
     return;
   }
-  const shape = validateRequestShape(parsed);
+  const shape = validateRequestShape(parsed, rawBody);
   if (!shape.ok) {
     await rejectRequest(policy, response, 400, shape.reason, { bodySha256 });
     return;
@@ -251,17 +285,35 @@ const releaseInFlight = (policy) => {
   });
 };
 
-const validateRequestShape = (value) => {
+const validateRequestShape = (value, rawBody) => {
   if (!isRecord(value)) {
     return { ok: false, reason: "request_shape_not_object" };
   }
   if (value.model !== apiModel) {
     return { ok: false, reason: "model_not_allowed" };
   }
-  const limit = value.max_tokens ?? value.max_completion_tokens;
-  if (limit === undefined) {
+  const rawOutputLimitFields = collectOutputLimitPropertyNames(rawBody);
+  if (!rawOutputLimitFields.ok) {
+    return { ok: false, reason: "json_malformed" };
+  }
+  const topLevelOutputLimitKeys = Object.keys(value).filter((key) =>
+    isOutputLimitFieldKey(key),
+  );
+  if (!Object.hasOwn(value, canonicalOutputLimitKey)) {
+    if (topLevelOutputLimitKeys.length > 0 || rawOutputLimitFields.keys.length > 0) {
+      return { ok: false, reason: "output_limit_ambiguous" };
+    }
     return { ok: false, reason: "output_limit_missing" };
   }
+  if (
+    topLevelOutputLimitKeys.length !== 1 ||
+    topLevelOutputLimitKeys[0] !== canonicalOutputLimitKey ||
+    rawOutputLimitFields.keys.length !== 1 ||
+    rawOutputLimitFields.keys[0] !== canonicalOutputLimitKey
+  ) {
+    return { ok: false, reason: "output_limit_ambiguous" };
+  }
+  const limit = value[canonicalOutputLimitKey];
   if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 20_000) {
     return { ok: false, reason: "output_limit_malformed" };
   }
@@ -277,6 +329,102 @@ const validateRequestShape = (value) => {
     }
   }
   return { ok: true };
+};
+
+const isOutputLimitFieldKey = (key) => {
+  if (outputLimitFieldKeys.has(key)) {
+    return true;
+  }
+  const normalized = key.replace(/[^0-9A-Za-z]/g, "").toLowerCase();
+  return outputLimitFieldPatterns.some((pattern) => pattern.test(normalized));
+};
+
+const collectOutputLimitPropertyNames = (rawBody) => {
+  const keys = [];
+  for (let index = 0; index < rawBody.length; index += 1) {
+    if (rawBody[index] !== '"') {
+      continue;
+    }
+    let token;
+    try {
+      token = readJsonStringToken(rawBody, index);
+    } catch {
+      return { ok: false, keys: [] };
+    }
+    const next = skipJsonWhitespace(rawBody, token.end);
+    if (rawBody[next] === ":" && isOutputLimitFieldKey(token.value)) {
+      keys.push(token.value);
+    }
+    index = token.end - 1;
+  }
+  return { ok: true, keys };
+};
+
+const readJsonStringToken = (rawBody, start) => {
+  let value = "";
+  for (let index = start + 1; index < rawBody.length; index += 1) {
+    const character = rawBody[index];
+    if (character === '"') {
+      return { end: index + 1, value };
+    }
+    if (character !== "\\") {
+      value += character;
+      continue;
+    }
+    index += 1;
+    if (index >= rawBody.length) {
+      throw new BoundaryError("json_malformed", "unterminated string escape");
+    }
+    const escaped = rawBody[index];
+    switch (escaped) {
+      case '"':
+      case "\\":
+      case "/":
+        value += escaped;
+        break;
+      case "b":
+        value += "\b";
+        break;
+      case "f":
+        value += "\f";
+        break;
+      case "n":
+        value += "\n";
+        break;
+      case "r":
+        value += "\r";
+        break;
+      case "t":
+        value += "\t";
+        break;
+      case "u": {
+        const hex = rawBody.slice(index + 1, index + 5);
+        if (hex.length !== 4 || !/^[0-9a-fA-F]{4}$/.test(hex)) {
+          throw new BoundaryError("json_malformed", "invalid unicode escape");
+        }
+        value += String.fromCharCode(Number.parseInt(hex, 16));
+        index += 4;
+        break;
+      }
+      default:
+        throw new BoundaryError("json_malformed", "invalid string escape");
+    }
+  }
+  throw new BoundaryError("json_malformed", "unterminated string");
+};
+
+const skipJsonWhitespace = (rawBody, start) => {
+  let index = start;
+  while (
+    index < rawBody.length &&
+    (rawBody[index] === " " ||
+      rawBody[index] === "\n" ||
+      rawBody[index] === "\r" ||
+      rawBody[index] === "\t")
+  ) {
+    index += 1;
+  }
+  return index;
 };
 
 const validatePolicy = (raw) => {
