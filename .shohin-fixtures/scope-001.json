@@ -1,0 +1,10 @@
+{
+  "fixture": "shohin-r7",
+  "requiredOutputs": [
+    {
+      "content": "completed gate fixture task 001\n",
+      "path": "docs/plans/r7-gate-nonzero-20260914t133618/outputs/001.txt"
+    }
+  ],
+  "task": "001"
+}
