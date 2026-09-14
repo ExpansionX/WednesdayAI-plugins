@@ -1,7 +1,9 @@
 import {
   chmodSync,
+  closeSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   utimesSync,
@@ -1112,6 +1114,69 @@ describe("Shohin in-scope watchdog safety helpers", () => {
       /^watchdog\.sh: heartbeat stale now_ms=\d{13} mtime_ms=\d{13} age_ms=\d+ stale_ms=1000\n$/,
     );
     expect(result.stderr).not.toContain("%3N");
+    expect(readFileSync(fixture.killFile, "utf-8")).toBe("1\n");
+  });
+
+  it("still writes cgroup.kill when stale diagnostics cannot write to stderr", () => {
+    const temp = makeTempRoot("watchdog-full-stderr");
+    const fixture = makeWatchdogScriptFixture(temp);
+    const heartbeat = path.join(fixture.runDir, "heartbeat.json");
+    const runner = path.join(temp, "runner.sh");
+    const runnerPid = path.join(temp, "runner.pid");
+    writeFileSync(heartbeat, "{}\n");
+    const old = new Date(Date.now() - 5_000);
+    utimesSync(heartbeat, old, old);
+    writeFileSync(
+      runner,
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        `printf '%s\\n' "$$" > "$1"`,
+        "sleep 10",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    chmodSync(runner, 0o755);
+
+    const stderrFd = openSync("/dev/full", "w");
+    const result = spawnSync(
+      watchdogPath,
+      [
+        "--scope-id",
+        "shohin-test-full-stderr.scope",
+        "--run-dir",
+        fixture.runDir,
+        "--heartbeat",
+        heartbeat,
+        "--heartbeat-stale-ms",
+        "1000",
+        "--heartbeat-poll-ms",
+        "50",
+        "--probe-mode",
+        "--",
+        runner,
+        runnerPid,
+      ],
+      {
+        encoding: "utf-8",
+        env: fixture.env,
+        stdio: ["ignore", "pipe", stderrFd],
+        timeout: 2_500,
+      },
+    );
+    closeSync(stderrFd);
+
+    try {
+      const pid = Number(readFileSync(runnerPid, "utf-8"));
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        process.kill(pid, "SIGKILL");
+      }
+    } catch {
+      // The fake cgroup.kill file cannot kill the child; cleanup is best-effort.
+    }
+
+    expect(result.status).toBe(124);
     expect(readFileSync(fixture.killFile, "utf-8")).toBe("1\n");
   });
 

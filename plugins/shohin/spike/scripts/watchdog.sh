@@ -278,13 +278,13 @@ while kill -0 "$runner_pid" 2>/dev/null; do
     sleep_poll_interval
     continue
   fi
+  printf '1\n' >"$kill_file" || fail_closed "write failed for $kill_file"
   printf 'watchdog.sh: heartbeat %s now_ms=%s mtime_ms=%s age_ms=%s stale_ms=%s\n' \
     "$heartbeat_reason" \
     "${heartbeat_now_ms:-unknown}" \
     "${heartbeat_mtime_ms:-unknown}" \
     "${heartbeat_age_ms:-unknown}" \
-    "$stale_ms" >&2
-  printf '1\n' >"$kill_file" || fail_closed "write failed for $kill_file"
+    "$stale_ms" >&2 || true
   exit 124
 done
 

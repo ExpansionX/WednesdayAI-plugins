@@ -777,7 +777,7 @@ describe("SpikeSupervisor", () => {
     );
 
     const before = scopeHeartbeat(path.join(root, "run-data"), "run009");
-    fixture.clock.current = "2026-09-13T12:01:00.000Z";
+    fixture.clock.current = "2026-09-13T12:00:04.000Z";
     const restartedSupervisor = new SpikeSupervisor(dependencies);
     const result = await restartedSupervisor.recover({ runRoot: path.join(root, "run-data") });
 
@@ -1215,6 +1215,40 @@ describe("SpikeSupervisor", () => {
       });
     });
     expect(truthCalls).toEqual(["run007"]);
+  });
+
+  it("stops stale active scopes during recovery before refreshing heartbeat", async () => {
+    const root = makeTempRoot("recover-stale-heartbeat");
+    mkdirSync(path.join(root, "source-home"), { recursive: true });
+    const fixture = makeSupervisor(root);
+    const supervisor = new SpikeSupervisor(fixture.dependencies);
+    await supervisor.start(
+      startOptions(root, { costOracle: makeOracle(1), heartbeatStaleAfterMs: 60_000 }),
+    );
+    const runRoot = path.join(root, "run-data");
+    const before = scopeHeartbeat(runRoot, "run007");
+    const activeRecord = readRecord(runRoot);
+    fixture.scope.requireCancelIdentity = true;
+    fixture.clock.current = "2026-09-13T12:01:01.001Z";
+
+    const restartedSupervisor = new SpikeSupervisor(fixture.dependencies);
+    const result = await restartedSupervisor.recover({ runRoot });
+    const recovered = readRecord(runRoot);
+
+    expect(result).toEqual({
+      ignoredRunIds: ["run007"],
+      refreshedActiveRunIds: [],
+      scheduledTruthRunIds: [],
+    });
+    expect(scopeHeartbeat(runRoot, "run007")).toBe(before);
+    expect(fixture.scope.cancels).toHaveLength(1);
+    expect(fixture.scope.cancels[0].identity).toEqual(activeRecord.scope!.identity);
+    expect(recovered.status).toBe("lost");
+    expect(recovered.truth).toMatchObject({ available: false, state: "unavailable" });
+    expect(recovered.journal.at(-1)).toMatchObject({
+      detail: { staleAfterMs: 60_000 },
+      event: "recovery_stale_heartbeat_scope_stopped",
+    });
   });
 
   it("does not refresh recovery heartbeat when an active record's scope is stopped", async () => {

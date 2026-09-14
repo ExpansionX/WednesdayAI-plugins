@@ -331,6 +331,11 @@ export interface HeartbeatRecord {
   readonly refreshedAt: string;
 }
 
+export interface HeartbeatPolicyRecord {
+  readonly pollIntervalMs: number;
+  readonly staleAfterMs: number;
+}
+
 export interface ScopeRecord {
   readonly controlPid: number;
   readonly controlStartTime: string;
@@ -356,6 +361,7 @@ export interface SpikeSupervisorRecord {
   readonly controlEnv: Readonly<Record<string, string>>;
   readonly createdAt: string;
   readonly heartbeat: HeartbeatRecord;
+  readonly heartbeatPolicy?: HeartbeatPolicyRecord;
   readonly identity: RunIdentity;
   readonly journal: readonly JournalEntry[];
   readonly launchEnv: Readonly<Record<string, string>>;
@@ -475,6 +481,7 @@ const controlEnvironmentKeys = [
   "DBUS_SESSION_BUS_ADDRESS",
 ] as const;
 const allowedRecordedControlEnvironment = new Set<string>(controlEnvironmentKeys);
+const defaultRecoveryHeartbeatStaleAfterMs = 60_000;
 const heartbeatRefreshIntervalMs = 10_000;
 const observationRefreshIntervalMs = 500;
 const defaultGateTimeoutMs = 30 * 60 * 1000;
@@ -817,6 +824,10 @@ export class SpikeSupervisor {
         ...activeRecord,
         controlEnv: launch.controlEnv,
         heartbeat: this.refreshHeartbeat(runDir),
+        heartbeatPolicy: {
+          pollIntervalMs: options.heartbeatPollIntervalMs,
+          staleAfterMs: options.heartbeatStaleAfterMs,
+        },
         launchEnv: launch.executorEnv,
         noProviderProfile: options.approvedNoProviderProfile,
         runnerGeneration,
@@ -939,6 +950,11 @@ export class SpikeSupervisor {
           continue;
         }
         verifyScopeIdentityBinding(record.scope.scopeId, scopeIdentity, record.scope.identity);
+        if (heartbeatIsStale(record, this.clock.nowIso())) {
+          await this.stopStaleActiveRunOnRecovery(record, runRoot, controlEnv);
+          ignoredRunIds.push(runId);
+          continue;
+        }
         const updated = {
           ...record,
           heartbeat: this.refreshHeartbeat(record.runDir),
@@ -978,6 +994,42 @@ export class SpikeSupervisor {
     }
 
     return { ignoredRunIds, refreshedActiveRunIds, scheduledTruthRunIds };
+  }
+
+  private async stopStaleActiveRunOnRecovery(
+    record: SpikeSupervisorRecord,
+    runRoot: string,
+    controlEnv: Readonly<Record<string, string>>,
+  ): Promise<void> {
+    if (record.scope === undefined) {
+      throw new SpikeSupervisorError(
+        "record_unavailable",
+        `Active run ${record.runId} is missing scope identity`,
+      );
+    }
+    const result = await this.scope.cancel({
+      controlEnv,
+      controlPid: record.scope.controlPid,
+      controlStartTime: record.scope.controlStartTime,
+      identity: record.scope.identity,
+      scopeId: record.scope.scopeId,
+    });
+    await this.verifyScopeStoppedBeforeTerminalPersistence(record, controlEnv);
+    this.disposeRunMaintenance(runRoot, record.runId);
+    this.activeTopics.delete(record.topic);
+    const current = this.readRecord(runRoot, record.runId);
+    const at = this.clock.nowIso();
+    this.writeRecord({
+      ...current,
+      status: "lost",
+      truth: current.truth ?? truthUnavailable(at),
+      updatedAt: at,
+      journal: appendJournal(current, this.clock, "recovery_stale_heartbeat_scope_stopped", {
+        sentKill: result.sentKill,
+        sentTerm: result.sentTerm,
+        staleAfterMs: heartbeatStaleAfterMsFor(record),
+      }),
+    });
   }
 
   public async cancel(runId: string, runRootInput?: string): Promise<SpikeCancelResult> {
@@ -2075,6 +2127,18 @@ const truthNeedsVerification = (truth: TruthVerificationRecord | undefined): boo
   truth.state === "pending" ||
   truth.state === "unavailable" ||
   truth.state === "verification_error";
+
+const heartbeatStaleAfterMsFor = (record: SpikeSupervisorRecord): number =>
+  record.heartbeatPolicy?.staleAfterMs ?? defaultRecoveryHeartbeatStaleAfterMs;
+
+const heartbeatIsStale = (record: SpikeSupervisorRecord, nowIso: string): boolean => {
+  const now = Date.parse(nowIso);
+  const refreshedAt = Date.parse(record.heartbeat.refreshedAt);
+  if (!Number.isFinite(now) || !Number.isFinite(refreshedAt)) {
+    return true;
+  }
+  return now - refreshedAt > heartbeatStaleAfterMsFor(record);
+};
 
 const publicRunSnapshot = (record: SpikeSupervisorRecord, at: string): SpikePublicRunSnapshot => {
   const truth = record.truth ?? truthUnavailable(at);
