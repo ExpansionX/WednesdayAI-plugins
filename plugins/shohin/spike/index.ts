@@ -24,6 +24,7 @@ import {
   type CostRole,
   type ModelCostOracle,
   type ModelIdMap,
+  type PaidDispatchBoundaryOptions,
   type SpikeRecoverResult,
   type SpikePublicRunSnapshot,
   type SpikeStartOptions,
@@ -252,6 +253,7 @@ const readRunRequest = (
       "maxAttempts",
       "modelIds",
       "opencodeCommand",
+      "paidBoundary",
       "probeMode",
       "probes",
       "runId",
@@ -336,6 +338,7 @@ const readRunRequest = (
     ),
     maxAttempts,
     modelIds: readModelIds(options.modelIds),
+    paidBoundary: readPaidBoundary(options.paidBoundary, probeForwarding.probeMode === true),
     runId: readOptionalComponent(options.runId, "runId"),
     runnerTimeoutSec: readOptionalInteger(
       options.runnerTimeoutSec,
@@ -367,6 +370,7 @@ const rejectNoProviderSubstitutions = (options: Record<string, unknown>): void =
     "maxAttempts",
     "modelIds",
     "opencodeCommand",
+    "paidBoundary",
     "probes",
     "runRoot",
     "runnerTimeoutSec",
@@ -552,6 +556,88 @@ const readRoleBound = (
       provider: readRequiredString(pricing.provider, `${role} provider`),
     },
   };
+};
+
+const readPaidBoundary = (
+  rawValue: unknown,
+  probeMode: boolean,
+): PaidDispatchBoundaryOptions | undefined => {
+  if (rawValue === undefined) {
+    return undefined;
+  }
+  const raw = requirePlainObject(rawValue, "paidBoundary");
+  assertOnlyKeys(
+    raw,
+    [
+      "allowLocalTestUpstreamBaseUrl",
+      "capUsd",
+      "kind",
+      "maxOutputTokens",
+      "maxRequests",
+      "maxSerializedBodyBytes",
+      "pricingReviewedAt",
+      "pricingValidUntil",
+    ],
+    "paidBoundary",
+  );
+  const allowLocalTestUpstreamBaseUrl = readOptionalString(
+    raw.allowLocalTestUpstreamBaseUrl,
+    "paidBoundary.allowLocalTestUpstreamBaseUrl",
+    undefined,
+  );
+  if (allowLocalTestUpstreamBaseUrl !== undefined) {
+    if (!probeMode) {
+      throw new RpcInputError("Paid boundary loopback upstream override requires probeMode=true");
+    }
+    const url = new URL(allowLocalTestUpstreamBaseUrl);
+    if (
+      url.protocol !== "http:" ||
+      (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")
+    ) {
+      throw new RpcInputError("Paid boundary loopback upstream must be http://127.0.0.1 or localhost");
+    }
+  }
+  return {
+    ...(allowLocalTestUpstreamBaseUrl === undefined ? {} : { allowLocalTestUpstreamBaseUrl }),
+    capUsd: readFiniteNumber(raw.capUsd, "paidBoundary.capUsd", 0, 50),
+    kind: readLiteral(
+      raw.kind,
+      "paidBoundary.kind",
+      "xai-grok-4.6-local-forwarder-v1",
+    ),
+    maxOutputTokens: readExactInteger(raw.maxOutputTokens, "paidBoundary.maxOutputTokens", 20_000),
+    maxRequests: readExactInteger(raw.maxRequests, "paidBoundary.maxRequests", 5),
+    maxSerializedBodyBytes: readExactInteger(
+      raw.maxSerializedBodyBytes,
+      "paidBoundary.maxSerializedBodyBytes",
+      100_000,
+    ),
+    pricingReviewedAt: readIsoTimestamp(raw.pricingReviewedAt, "paidBoundary.pricingReviewedAt"),
+    pricingValidUntil: readIsoTimestamp(raw.pricingValidUntil, "paidBoundary.pricingValidUntil"),
+  };
+};
+
+const readLiteral = <T extends string>(value: unknown, label: string, expected: T): T => {
+  if (value !== expected) {
+    throw new RpcInputError(`${label} must be ${expected}`);
+  }
+  return expected;
+};
+
+const readExactInteger = (value: unknown, label: string, expected: number): number => {
+  const observed = readInteger(value, label, expected);
+  if (observed !== expected) {
+    throw new RpcInputError(`${label} must be exactly ${expected}`);
+  }
+  return observed;
+};
+
+const readIsoTimestamp = (value: unknown, label: string): string => {
+  const timestamp = readRequiredString(value, label);
+  if (!Number.isFinite(Date.parse(timestamp))) {
+    throw new RpcInputError(`${label} must be a valid ISO timestamp`);
+  }
+  return timestamp;
 };
 
 const requirePlainObject = (value: unknown, label: string): Record<string, unknown> => {

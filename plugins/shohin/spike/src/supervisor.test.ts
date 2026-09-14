@@ -21,6 +21,7 @@ import {
   type CostRole,
   type LaunchArtifacts,
   type ModelCostOracle,
+  type PaidDispatchBoundaryOptions,
   type ProbePatch,
   type ApprovedNoProviderProfileRecord,
   type RunIdentity,
@@ -204,6 +205,10 @@ const waiExecutorsPatchFixture = (): string =>
     '  raw="$(_dispatch terminal_reviewer "$pfile" "$root" -m "$(_resolve_model terminal_reviewer)")"',
     '  rm -f "$pfile"',
     "}",
+    "_dispatch() {",
+    '      _maybe_timeout "$WAI_DAG_DISPATCH_TIMEOUT" "$WAI_DAG_OPENCODE" run --format json -m "$model" --dir "$cwd" \\',
+    '        "Read the full task instructions from stdin and execute them." < "$pfile"',
+    "}",
   ].join("\n") + "\n";
 
 const makeOracle = (reservationUsd = 5): ModelCostOracle => ({
@@ -230,6 +235,50 @@ const makeOracle = (reservationUsd = 5): ModelCostOracle => ({
     ),
   ) as ModelCostOracle["roles"],
 });
+
+const makePaidBoundary = (overrides: Partial<PaidDispatchBoundaryOptions> = {}): PaidDispatchBoundaryOptions => ({
+  capUsd: 3.2,
+  kind: "xai-grok-4.6-local-forwarder-v1",
+  maxOutputTokens: 20_000,
+  maxRequests: 5,
+  maxSerializedBodyBytes: 100_000,
+  pricingReviewedAt: new Date().toISOString(),
+  pricingValidUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  ...overrides,
+});
+
+const makePaidOracle = (): ModelCostOracle => ({
+  capUsd: 3.2,
+  roles: Object.fromEntries(
+    (["worker", "validator", "assessor", "prewarm", "terminal"] satisfies CostRole[]).map(
+      (role) => [
+        role,
+        {
+          boundSource: "xai-docs-2026-09-14-grok-4.6-long-context",
+          ceiling: {
+            enforcedBy: "xai-grok-4.6-local-forwarder-v1",
+            maxInputTokens: 100_000,
+            maxOutputTokens: 20_000,
+          },
+          model: "xai/grok-4.6",
+          pricing: {
+            inputUsdPerMillionTokens: 4,
+            outputUsdPerMillionTokens: 12,
+            provider: "xAI via Shohin local boundary",
+          },
+        },
+      ],
+    ),
+  ) as ModelCostOracle["roles"],
+});
+
+const paidModelIds = {
+  assessor: "xai/grok-4.6",
+  prewarm: "xai/grok-4.6",
+  terminal: "xai/grok-4.6",
+  validator: "xai/grok-4.6",
+  worker: "xai/grok-4.6",
+};
 
 const makePatch = (relativePath = "wai-dag-executors.sh"): ProbePatch => ({
   closed: true,
@@ -599,6 +648,101 @@ describe("SpikeSupervisor", () => {
       "worker",
     ]);
     expect(reconciled.spendLedger.totalActualUsd).toBe(0.41);
+  });
+
+  it("launches paid Grok runs only through the generated local spend boundary", async () => {
+    const root = makeTempRoot("paid-boundary-launch");
+    const sourceHome = path.join(root, "source-home");
+    mkdirSync(path.join(sourceHome, ".local", "share", "opencode"), { recursive: true });
+    writeFileSync(
+      path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
+      "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
+    );
+    const { scope, supervisor } = makeSupervisor(root);
+
+    await supervisor.start(startOptions(root, {
+      allowLocalTestUpstreamBaseUrl: undefined,
+      costOracle: makePaidOracle(),
+      modelIds: paidModelIds,
+      paidBoundary: makePaidBoundary({ allowLocalTestUpstreamBaseUrl: "http://127.0.0.1:65530/v1" }),
+    }));
+
+    const record = readRecord(path.join(root, "run-data"));
+    const runDir = path.join(root, "run-data", "run007");
+    expect(record.paidBoundary).toMatchObject({
+      credentialLeaf: ".local/share/opencode/auth.json",
+      mode: "test",
+      route: "/v1/chat/completions",
+      upstreamKind: "loopback-test",
+    });
+    expect(record.runnerGeneration!.diffs.map((diff) => diff.name)).toEqual([
+      "shohin-observability",
+      "shohin-paid-boundary-opencode",
+      "fixture-probe",
+    ]);
+    expect(readFileSync(path.join(record.runnerGeneration!.path, "wai-dag-executors.sh"), "utf-8"))
+      .toContain("run --pure --format json");
+    expect(readFileSync(path.join(runDir, "HOME", ".local", "share", "opencode", "auth.json"), "utf-8"))
+      .toContain("fake-placeholder");
+
+    const config = JSON.parse(readFileSync(record.paidBoundary!.configPath, "utf-8")) as {
+      provider: { xai: { options: { baseURL: string } } };
+    };
+    expect(config.provider.xai.options.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
+    expect(JSON.stringify(config)).not.toContain("api.x.ai");
+    const policy = JSON.parse(readFileSync(record.paidBoundary!.policyPath, "utf-8")) as {
+      allowed: { maxRequests: number; maxOutputTokens: number; maxSerializedBodyBytes: number };
+      pricing: { wholeRunMaxUsd: number };
+      policyVersion: string;
+      upstream: { baseUrl: string };
+    };
+    expect(policy.policyVersion).toBe("xai-grok-4.6-local-forwarder-v1");
+    expect(policy).toMatchObject({
+      allowed: {
+        maxOutputTokens: 20_000,
+        maxRequests: 5,
+        maxSerializedBodyBytes: 100_000,
+      },
+      pricing: { wholeRunMaxUsd: 3.2 },
+      upstream: { baseUrl: "http://127.0.0.1:65530/v1" },
+    });
+
+    const launch = scope.launches[0];
+    expect(launch.runner).toEqual([
+      record.paidBoundary!.launcherPath,
+      "/resolved/bash",
+      path.join(record.runnerGeneration!.path, "wai-dag-run.sh"),
+      "shohin-phase-0-spike",
+    ]);
+    expect(launch.executorEnv).toMatchObject({
+      OPENCODE_CONFIG: record.paidBoundary!.configPath,
+      OPENCODE_CONFIG_DIR: path.join(path.dirname(record.paidBoundary!.configPath), "empty-opencode-dir"),
+      WAI_SHOHIN_PAID_BOUNDARY: "xai-grok-4.6",
+    });
+    expect(launch.executorEnv.OPENCODE_CONFIG_CONTENT).toContain("xai/grok-4.6");
+    expect(launch.executorEnv.OPENCODE_CONFIG_CONTENT).not.toContain("api.x.ai");
+    expect(record.spendLedger.totalReservedUsd).toBe(3.2);
+  });
+
+  it("refuses project OpenCode config bypasses before paid boundary launch", async () => {
+    const root = makeTempRoot("paid-boundary-bypass");
+    const sourceHome = path.join(root, "source-home");
+    mkdirSync(path.join(sourceHome, ".local", "share", "opencode"), { recursive: true });
+    writeFileSync(
+      path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
+      "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
+    );
+    const { scope, supervisor, targetRoot } = makeSupervisor(root);
+    writeFileSync(path.join(targetRoot, "opencode.json"), "{\"provider\":{\"xai\":{}}}\n");
+
+    await expect(
+      supervisor.start(startOptions(root, {
+        costOracle: makePaidOracle(),
+        modelIds: paidModelIds,
+        paidBoundary: makePaidBoundary({ allowLocalTestUpstreamBaseUrl: "http://127.0.0.1:65530/v1" }),
+      })),
+    ).rejects.toMatchObject({ code: "paid_boundary_refused" });
+    expect(scope.launches).toHaveLength(0);
   });
 
   it("refuses missing, unknown, unbounded, restart and cap-edge budgets before dispatch", async () => {

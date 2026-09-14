@@ -89,6 +89,7 @@ export type SpikeSupervisorErrorCode =
   | "invalid_option"
   | "patch_not_closed"
   | "patch_unknown"
+  | "paid_boundary_refused"
   | "record_unavailable"
   | "scope_not_active"
   | "scope_not_stopped";
@@ -173,6 +174,32 @@ export interface ModelCostOracle {
 }
 
 export type ModelIdMap = Readonly<Record<CostRole, string>>;
+
+export interface PaidDispatchBoundaryOptions {
+  readonly kind: "xai-grok-4.6-local-forwarder-v1";
+  readonly allowLocalTestUpstreamBaseUrl?: string;
+  readonly capUsd: number;
+  readonly maxOutputTokens: number;
+  readonly maxRequests: number;
+  readonly maxSerializedBodyBytes: number;
+  readonly pricingReviewedAt: string;
+  readonly pricingValidUntil: string;
+}
+
+export interface PaidDispatchBoundaryRecord {
+  readonly configPath: string;
+  readonly configSha256: string;
+  readonly credentialLeaf: ".local/share/opencode/auth.json";
+  readonly launcherPath: string;
+  readonly logPath: string;
+  readonly mode: "enforce" | "test";
+  readonly policyPath: string;
+  readonly policySha256: string;
+  readonly readyPath: string;
+  readonly route: "/v1/chat/completions";
+  readonly statePath: string;
+  readonly upstreamKind: "xai" | "loopback-test";
+}
 
 export interface SpendReservation {
   readonly at: string;
@@ -372,6 +399,7 @@ export interface SpikeSupervisorRecord {
   readonly noProviderProfile?: ApprovedNoProviderProfileRecord;
   readonly observationBaseline?: RunObservationBaselineRecord;
   readonly observations?: RunObservationRecord;
+  readonly paidBoundary?: PaidDispatchBoundaryRecord;
   readonly runnerExit?: RunnerExitRecord;
   readonly runnerGeneration?: RunnerGenerationRecord;
   readonly runtimeAllowList: RuntimeAllowListRecord;
@@ -402,6 +430,7 @@ export interface SpikeStartOptions {
   readonly namedProbePatches?: readonly string[];
   readonly notifyScriptPath: string;
   readonly opencodeCommand: string;
+  readonly paidBoundary?: PaidDispatchBoundaryOptions;
   readonly probePatches?: Readonly<Record<string, ProbePatch | undefined>>;
   readonly registeredRepoRoot: string;
   readonly reportAppendScriptPath: string;
@@ -453,6 +482,16 @@ export interface SpikeSupervisorDependencies {
 
 const costRoles = ["worker", "validator", "assessor", "prewarm", "terminal"] as const;
 const defaultCapUsd = 50;
+const paidBoundaryKind = "xai-grok-4.6-local-forwarder-v1" as const;
+const paidBoundaryModel = "xai/grok-4.6";
+const paidBoundaryApiModel = "grok-4.6";
+const paidBoundaryCredentialLeaf = ".local/share/opencode/auth.json" as const;
+const paidBoundaryRoute = "/v1/chat/completions" as const;
+const paidBoundaryProductionUpstream = "https://api.x.ai/v1";
+const paidBoundaryInputUsdPerMillionTokens = 4;
+const paidBoundaryCachedInputUsdPerMillionTokens = 1;
+const paidBoundaryOutputUsdPerMillionTokens = 12;
+const paidBoundaryLongContextThresholdTokens = 200_000;
 const componentPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const commitPattern = /^[0-9a-f]{40}$/i;
 const terminalStatuses = new Set<SpikeRunStatus>([
@@ -669,6 +708,15 @@ export class SpikeSupervisor {
         );
       }
       verifyApprovedNoProviderStartingIdentity(options.approvedNoProviderProfile, identity);
+      if (options.approvedNoProviderProfile !== undefined && options.paidBoundary !== undefined) {
+        throw new SpikeSupervisorError(
+          "invalid_option",
+          "Approved no-provider profiles cannot be combined with a paid dispatch boundary",
+        );
+      }
+      if (options.paidBoundary !== undefined) {
+        assertNoOpenCodeBypassFiles(identity.targetRepoRoot);
+      }
 
       const heartbeat = this.refreshHeartbeat(runDir);
       const record = this.makeInitialRecord({
@@ -702,6 +750,10 @@ export class SpikeSupervisor {
         allowList: runtimeAllowList.home,
         destinationHome: home,
         sourceHome: options.sourceHome,
+      });
+      const paidBoundary = this.preparePaidBoundary(options, {
+        home,
+        runDir,
       });
 
       this.copyPristineBundle(options.waiBundleSourceDir, generationDir);
@@ -752,6 +804,7 @@ export class SpikeSupervisor {
           topic,
           verifier,
         }, this.clock.nowIso()),
+        paidBoundary,
         runnerGeneration,
         runtimeAllowList,
         status: "starting",
@@ -777,6 +830,7 @@ export class SpikeSupervisor {
       const launch = this.buildLaunch(options, {
         generationDir,
         home,
+        paidBoundary,
         runDir,
         runtimeAllowList,
         tmpdir,
@@ -830,6 +884,7 @@ export class SpikeSupervisor {
         },
         launchEnv: launch.executorEnv,
         noProviderProfile: options.approvedNoProviderProfile,
+        paidBoundary,
         runnerGeneration,
         scope: {
           controlPid: scopeHandle.controlPid,
@@ -1774,6 +1829,9 @@ export class SpikeSupervisor {
     options: SpikeStartOptions,
   ): Promise<LaunchArtifacts[]> {
     const diffs: LaunchArtifacts[] = [applyReviewedObservabilityPatch(generationDir)];
+    if (options.paidBoundary !== undefined) {
+      diffs.push(applyPaidBoundaryOpenCodePatch(generationDir));
+    }
     for (const name of options.namedProbePatches ?? []) {
       const patch = options.probePatches?.[name];
       if (patch === undefined) {
@@ -1793,11 +1851,83 @@ export class SpikeSupervisor {
     return diffs;
   }
 
+  private preparePaidBoundary(
+    options: SpikeStartOptions,
+    paths: {
+      readonly home: string;
+      readonly runDir: string;
+    },
+  ): PaidDispatchBoundaryRecord | undefined {
+    const boundary = options.paidBoundary;
+    if (boundary === undefined) {
+      return undefined;
+    }
+    assertPaidBoundaryOptions(boundary, options);
+    copyAllowedHome({
+      allowList: [paidBoundaryCredentialLeaf],
+      destinationHome: paths.home,
+      sourceHome: options.sourceHome,
+    });
+
+    const boundaryDir = path.join(paths.runDir, "paid-dispatch-boundary");
+    mkdirSync(boundaryDir, { recursive: true, mode: 0o700 });
+    chmodSync(boundaryDir, 0o700);
+    const port = allocateLoopbackPort();
+    const mode = boundary.allowLocalTestUpstreamBaseUrl === undefined ? "enforce" : "test";
+    const upstreamBaseUrl = boundary.allowLocalTestUpstreamBaseUrl ?? paidBoundaryProductionUpstream;
+    const opencodeConfig = buildPaidBoundaryOpenCodeConfig(port);
+    const configPath = path.join(boundaryDir, "opencode.json");
+    const emptyConfigDir = path.join(boundaryDir, "empty-opencode-dir");
+    mkdirSync(emptyConfigDir, { recursive: true, mode: 0o700 });
+    chmodSync(emptyConfigDir, 0o700);
+    atomicWriteJson(configPath, opencodeConfig);
+    const policyPath = path.join(boundaryDir, "policy.json");
+    const statePath = path.join(boundaryDir, "state.json");
+    const logPath = path.join(boundaryDir, "events.jsonl");
+    const readyPath = path.join(boundaryDir, "ready.json");
+    const policy = buildPaidBoundaryPolicy({
+      boundary,
+      logPath,
+      mode,
+      port,
+      readyPath,
+      statePath,
+      upstreamBaseUrl,
+    });
+    atomicWriteJson(policyPath, policy);
+    const launcherPath = path.join(boundaryDir, "launch-with-boundary.sh");
+    writeFileSync(launcherPath, paidBoundaryLauncherScript({
+      boundaryScriptPath: path.join(packageRootForRuntimeScript(options.wrapperScriptPath), "xai-spend-boundary.mjs"),
+      policyPath,
+      readyPath,
+    }), {
+      encoding: "utf-8",
+      flag: "wx",
+      mode: 0o700,
+    });
+    chmodSync(launcherPath, 0o700);
+    return {
+      configPath,
+      configSha256: `sha256:${sha256(readFileSync(configPath))}`,
+      credentialLeaf: paidBoundaryCredentialLeaf,
+      launcherPath,
+      logPath,
+      mode,
+      policyPath,
+      policySha256: `sha256:${sha256(readFileSync(policyPath))}`,
+      readyPath,
+      route: paidBoundaryRoute,
+      statePath,
+      upstreamKind: mode === "enforce" ? "xai" : "loopback-test",
+    };
+  }
+
   private buildLaunch(
     options: SpikeStartOptions,
     paths: {
       readonly generationDir: string;
       readonly home: string;
+      readonly paidBoundary?: PaidDispatchBoundaryRecord;
       readonly runDir: string;
       readonly runtimeAllowList: RuntimeAllowListRecord;
       readonly tmpdir: string;
@@ -1854,17 +1984,34 @@ export class SpikeSupervisor {
       PATH: pathEnv,
       ...frozenRunnerEnv,
     } satisfies SourceEnvironment;
-    const runnerKeys = Object.keys(frozenRunnerEnv).sort();
+    const paidBoundaryEnv = paths.paidBoundary === undefined
+      ? {}
+      : paidBoundaryExecutorEnv(paths.paidBoundary);
+    const runnerKeys = Object.keys({
+      ...frozenRunnerEnv,
+      ...paidBoundaryEnv,
+    }).sort();
+    const runner = paths.paidBoundary === undefined
+      ? [runnerCommand, path.join(paths.generationDir, requiredWaiBundleFiles.run), options.topic]
+      : [
+          paths.paidBoundary.launcherPath,
+          runnerCommand,
+          path.join(paths.generationDir, requiredWaiBundleFiles.run),
+          options.topic,
+        ];
     return {
       controlEnv: buildControlEnvironment({ sourceEnv: options.controlSourceEnv }),
       executorEnv: buildExecutorEnvironment({
         envAllowList: paths.runtimeAllowList.env,
         home: paths.home,
         runnerEnvKeys: runnerKeys,
-        sourceEnv: executorSourceEnv,
+        sourceEnv: {
+          ...executorSourceEnv,
+          ...paidBoundaryEnv,
+        },
         tmpdir: paths.tmpdir,
       }),
-      runner: [runnerCommand, path.join(paths.generationDir, requiredWaiBundleFiles.run), options.topic],
+      runner,
     };
   }
 
@@ -1965,6 +2112,297 @@ export class SpikeSupervisor {
     return runRoot;
   }
 }
+
+const assertPaidBoundaryOptions = (
+  boundary: PaidDispatchBoundaryOptions,
+  options: SpikeStartOptions,
+): void => {
+  if (boundary.kind !== paidBoundaryKind) {
+    throw new SpikeSupervisorError("paid_boundary_refused", "Unknown paid dispatch boundary kind");
+  }
+  if (boundary.allowLocalTestUpstreamBaseUrl !== undefined) {
+    const url = new URL(boundary.allowLocalTestUpstreamBaseUrl);
+    if (
+      url.protocol !== "http:" ||
+      (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")
+    ) {
+      throw new SpikeSupervisorError(
+        "paid_boundary_refused",
+        "Paid boundary test upstream must be loopback HTTP",
+      );
+    }
+  }
+  if (
+    boundary.maxRequests !== 5 ||
+    boundary.maxSerializedBodyBytes !== 100_000 ||
+    boundary.maxOutputTokens !== 20_000
+  ) {
+    throw new SpikeSupervisorError(
+      "paid_boundary_refused",
+      "Paid boundary limits must match the reviewed Grok 4.6 packet",
+    );
+  }
+  const perRequestMaxUsd = paidBoundaryPerRequestMaxUsd(boundary);
+  const wholeRunMaxUsd = roundUsd(perRequestMaxUsd * boundary.maxRequests);
+  if (boundary.capUsd !== wholeRunMaxUsd || boundary.capUsd >= defaultCapUsd) {
+    throw new SpikeSupervisorError(
+      "paid_boundary_refused",
+      "Paid boundary cap must equal the conservative whole-run maximum below USD50",
+      { capUsd: boundary.capUsd, wholeRunMaxUsd },
+    );
+  }
+  const validUntil = Date.parse(boundary.pricingValidUntil);
+  if (!Number.isFinite(validUntil) || validUntil <= Date.now()) {
+    throw new SpikeSupervisorError("paid_boundary_refused", "Paid boundary pricing is stale");
+  }
+  if (!Number.isFinite(Date.parse(boundary.pricingReviewedAt))) {
+    throw new SpikeSupervisorError(
+      "paid_boundary_refused",
+      "Paid boundary pricing review timestamp is invalid",
+    );
+  }
+  const models = assertModelIds(options.modelIds);
+  for (const role of costRoles) {
+    if (models[role] !== paidBoundaryModel) {
+      throw new SpikeSupervisorError(
+        "paid_boundary_refused",
+        "Paid boundary permits only xai/grok-4.6 for every Shohin role",
+        { role, model: models[role] },
+      );
+    }
+  }
+  assertPaidBoundaryOracle(boundary, options.costOracle);
+};
+
+const assertPaidBoundaryOracle = (
+  boundary: PaidDispatchBoundaryOptions,
+  oracle: ModelCostOracle | undefined,
+): void => {
+  if (oracle === undefined) {
+    throw new SpikeSupervisorError("budget_oracle_missing", "Missing paid boundary cost oracle");
+  }
+  if (oracle.capUsd !== boundary.capUsd) {
+    throw new SpikeSupervisorError(
+      "paid_boundary_refused",
+      "Cost oracle cap must match the paid boundary cap",
+    );
+  }
+  for (const role of costRoles) {
+    const bound = oracle.roles[role];
+    if (bound === undefined) {
+      throw new SpikeSupervisorError("budget_role_missing", `Missing paid boundary role ${role}`);
+    }
+    if (
+      bound.model !== paidBoundaryModel ||
+      bound.ceiling.maxInputTokens !== boundary.maxSerializedBodyBytes ||
+      bound.ceiling.maxOutputTokens !== boundary.maxOutputTokens ||
+      bound.pricing.inputUsdPerMillionTokens !== paidBoundaryInputUsdPerMillionTokens ||
+      bound.pricing.outputUsdPerMillionTokens !== paidBoundaryOutputUsdPerMillionTokens
+    ) {
+      throw new SpikeSupervisorError(
+        "paid_boundary_refused",
+        "Cost oracle must match the paid boundary model, long-context pricing and limits",
+        { role },
+      );
+    }
+  }
+};
+
+const paidBoundaryPerRequestMaxUsd = (boundary: PaidDispatchBoundaryOptions): number =>
+  roundUsd(
+    (boundary.maxSerializedBodyBytes * paidBoundaryInputUsdPerMillionTokens +
+      boundary.maxOutputTokens * paidBoundaryOutputUsdPerMillionTokens) /
+      1_000_000,
+  );
+
+const buildPaidBoundaryPolicy = ({
+  boundary,
+  logPath,
+  mode,
+  port,
+  readyPath,
+  statePath,
+  upstreamBaseUrl,
+}: {
+  readonly boundary: PaidDispatchBoundaryOptions;
+  readonly logPath: string;
+  readonly mode: "enforce" | "test";
+  readonly port: number;
+  readonly readyPath: string;
+  readonly statePath: string;
+  readonly upstreamBaseUrl: string;
+}): Record<string, unknown> => {
+  const perRequestMaxUsd = paidBoundaryPerRequestMaxUsd(boundary);
+  return {
+    allowed: {
+      apiModel: paidBoundaryApiModel,
+      contentType: "application/json",
+      maxConcurrent: 1,
+      maxOutputTokens: boundary.maxOutputTokens,
+      maxRequests: boundary.maxRequests,
+      maxSerializedBodyBytes: boundary.maxSerializedBodyBytes,
+      maxServerSideToolInvocations: 0,
+      method: "POST",
+      openCodeModel: paidBoundaryModel,
+      route: paidBoundaryRoute,
+    },
+    listen: {
+      host: "127.0.0.1",
+      port,
+    },
+    logPath,
+    mode,
+    policyVersion: paidBoundaryKind,
+    pricing: {
+      cachedInputUsdPerMillionTokens: paidBoundaryCachedInputUsdPerMillionTokens,
+      capUsd: boundary.capUsd,
+      inputUsdPerMillionTokens: paidBoundaryInputUsdPerMillionTokens,
+      longContextThresholdTokens: paidBoundaryLongContextThresholdTokens,
+      outputUsdPerMillionTokens: paidBoundaryOutputUsdPerMillionTokens,
+      perRequestMaxUsd,
+      priorityMultiplier: 2,
+      reviewedAt: boundary.pricingReviewedAt,
+      validUntil: boundary.pricingValidUntil,
+      wholeRunMaxUsd: roundUsd(perRequestMaxUsd * boundary.maxRequests),
+    },
+    readyPath,
+    statePath,
+    upstream: {
+      baseUrl: upstreamBaseUrl,
+      noRedirect: true,
+    },
+  };
+};
+
+const buildPaidBoundaryOpenCodeConfig = (port: number): Record<string, unknown> => ({
+  $schema: "https://opencode.ai/config.json",
+  autoupdate: false,
+  disabled_providers: ["anthropic", "openai", "zai", "openrouter", "opencode", "vercel"],
+  enabled_providers: ["xai"],
+  experimental: {
+    policies: [
+      { action: "provider.use", effect: "deny", resource: "anthropic" },
+      { action: "provider.use", effect: "deny", resource: "openai" },
+      { action: "provider.use", effect: "deny", resource: "opencode" },
+      { action: "provider.use", effect: "deny", resource: "openrouter" },
+      { action: "provider.use", effect: "deny", resource: "vercel" },
+      { action: "provider.use", effect: "deny", resource: "zai" },
+    ],
+  },
+  lsp: false,
+  mcp: {},
+  model: paidBoundaryModel,
+  openTelemetry: false,
+  plugin: [],
+  provider: {
+    xai: {
+      models: {
+        [paidBoundaryApiModel]: {
+          limit: {
+            context: 100_000,
+            output: 20_000,
+          },
+          name: paidBoundaryApiModel,
+        },
+      },
+      options: {
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        chunkTimeout: 300_000,
+        headerTimeout: 300_000,
+        setCacheKey: false,
+        timeout: 1_800_000,
+      },
+      whitelist: [paidBoundaryApiModel],
+    },
+  },
+  share: "disabled",
+  small_model: paidBoundaryModel,
+  tools: {
+    bash: false,
+    write: false,
+  },
+});
+
+const paidBoundaryExecutorEnv = (
+  boundary: PaidDispatchBoundaryRecord,
+): Readonly<Record<string, string>> => ({
+  OPENCODE_CONFIG: boundary.configPath,
+  OPENCODE_CONFIG_CONTENT: readFileSync(boundary.configPath, "utf-8"),
+  OPENCODE_CONFIG_DIR: path.join(path.dirname(boundary.configPath), "empty-opencode-dir"),
+  WAI_SHOHIN_PAID_BOUNDARY: "xai-grok-4.6",
+});
+
+const paidBoundaryLauncherScript = ({
+  boundaryScriptPath,
+  policyPath,
+  readyPath,
+}: {
+  readonly boundaryScriptPath: string;
+  readonly policyPath: string;
+  readonly readyPath: string;
+}): string => `#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+rm -f ${shellQuote(readyPath)}
+node ${shellQuote(boundaryScriptPath)} ${shellQuote(policyPath)} &
+boundary_pid="$!"
+cleanup() {
+  kill "$boundary_pid" >/dev/null 2>&1 || true
+  wait "$boundary_pid" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+for _ in $(seq 1 200); do
+  if [ -s ${shellQuote(readyPath)} ]; then
+    break
+  fi
+  if ! kill -0 "$boundary_pid" >/dev/null 2>&1; then
+    wait "$boundary_pid"
+  fi
+  sleep 0.05
+done
+if [ ! -s ${shellQuote(readyPath)} ]; then
+  echo "shohin paid boundary did not become ready" >&2
+  exit 2
+fi
+"$@"
+`;
+
+const packageRootForRuntimeScript = (wrapperScriptPath: string): string => {
+  const scriptsDir = path.dirname(executablePath(wrapperScriptPath, "OpenCode wrapper"));
+  return scriptsDir;
+};
+
+const allocateLoopbackPort = (): number => {
+  const script = "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()";
+  const result = spawnSync("python3", ["-c", script], {
+    encoding: "utf-8",
+    env: { PATH: "/usr/bin:/bin" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const port = Number.parseInt(String(result.stdout).trim(), 10);
+  if ((result.status ?? 1) !== 0 || !Number.isSafeInteger(port) || port <= 0 || port > 65535) {
+    throw new SpikeSupervisorError("paid_boundary_refused", "Unable to reserve loopback port");
+  }
+  return port;
+};
+
+const assertNoOpenCodeBypassFiles = (targetRepoRoot: string): void => {
+  for (const relativePath of ["opencode.json", "opencode.jsonc", ".opencode"] as const) {
+    const candidate = path.join(targetRepoRoot, relativePath);
+    if (existsSync(candidate)) {
+      const stats = lstatSync(candidate);
+      if (stats.isFile() || stats.isDirectory() || stats.isSymbolicLink()) {
+        throw new SpikeSupervisorError(
+          "paid_boundary_refused",
+          "Target contains an OpenCode project config or plugin path that could bypass the paid boundary",
+          { relativePath },
+        );
+      }
+    }
+  }
+};
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
 
 const isCancelablePrelaunchRefusalRecord = (record: SpikeSupervisorRecord): boolean => {
   if (
@@ -2462,6 +2900,44 @@ const applyReviewedObservabilityPatch = (generationDir: string): LaunchArtifacts
     diff: makeReplacementDiff(requiredWaiBundleFiles.executors, before, after, appliedHunks),
     filesChanged: [requiredWaiBundleFiles.executors],
     name: "shohin-observability",
+  };
+};
+
+const applyPaidBoundaryOpenCodePatch = (generationDir: string): LaunchArtifacts => {
+  const executorsPath = path.join(generationDir, requiredWaiBundleFiles.executors);
+  const before = readFileSync(executorsPath, "utf-8");
+  let after = before;
+  const appliedHunks: Array<{ readonly before: string; readonly after: string }> = [];
+  const replacements: Array<readonly [string, string]> = [
+    [
+      '_maybe_timeout "$WAI_DAG_PREWARM_TIMEOUT" "$WAI_DAG_OPENCODE" run --format json \\',
+      '_maybe_timeout "$WAI_DAG_PREWARM_TIMEOUT" "$WAI_DAG_OPENCODE" run --pure --format json \\',
+    ],
+    [
+      '_maybe_timeout "$WAI_DAG_DISPATCH_TIMEOUT" "$WAI_DAG_OPENCODE" run --format json -m "$model" --dir "$cwd" \\',
+      '_maybe_timeout "$WAI_DAG_DISPATCH_TIMEOUT" "$WAI_DAG_OPENCODE" run --pure --format json -m "$model" --dir "$cwd" \\',
+    ],
+  ];
+  for (const [needle, replacement] of replacements) {
+    const count = after.split(needle).length - 1;
+    if (count < 1) {
+      throw new SpikeSupervisorError(
+        "patch_not_closed",
+        "Paid boundary OpenCode patch anchor not found in copied WAI executors",
+        { needle },
+      );
+    }
+    after = after.replaceAll(needle, replacement);
+    appliedHunks.push({ before: needle, after: replacement });
+  }
+  const marker = "# Shohin paid-boundary patch: OpenCode runs with --pure while HTTP goes through local xAI spend boundary";
+  after = `${after}\n${marker}\n`;
+  appliedHunks.push({ before: "", after: marker });
+  writeFileSync(executorsPath, after, "utf-8");
+  return {
+    diff: makeReplacementDiff(requiredWaiBundleFiles.executors, before, after, appliedHunks),
+    filesChanged: [requiredWaiBundleFiles.executors],
+    name: "shohin-paid-boundary-opencode",
   };
 };
 
