@@ -1,0 +1,10 @@
+{
+  "fixture": "shohin-r7",
+  "requiredOutputs": [
+    {
+      "content": "completed task 001; task 002 intentionally missing\n",
+      "path": "docs/plans/r7-missing-task-20260914t133618/outputs/001.txt"
+    }
+  ],
+  "task": "001"
+}
