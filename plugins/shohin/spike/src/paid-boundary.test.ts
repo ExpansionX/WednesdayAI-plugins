@@ -246,6 +246,66 @@ describe("xAI paid spend boundary", () => {
     expect(upstream.requests).toHaveLength(0);
   });
 
+  it("rejects choice multipliers, unknown top-level fields and raw duplicate keys before upstream dispatch", async () => {
+    const root = makeTempRoot("paid-boundary-request-shape");
+    const upstream = await startFakeUpstream();
+    const policy = makePolicy(root, upstream.baseUrl);
+    const boundary = await startBoundary(root, policy);
+
+    const cases: Array<readonly [string, unknown, string]> = [
+      ["n two", { ...validBody(), n: 2 }, "request_field_not_allowed"],
+      ["n one", { ...validBody(), n: 1 }, "request_field_not_allowed"],
+      ["n null", { ...validBody(), n: null }, "request_field_not_allowed"],
+      ["n string", { ...validBody(), n: "1" }, "request_field_not_allowed"],
+      ["n float", { ...validBody(), n: 1.5 }, "request_field_not_allowed"],
+      ["n negative", { ...validBody(), n: -1 }, "request_field_not_allowed"],
+      ["n large", { ...validBody(), n: 1_000_000 }, "request_field_not_allowed"],
+      ["streaming", { ...validBody(), stream: true }, "request_field_not_allowed"],
+      ["responses max output", { ...validBody(), max_output_tokens: 20_000 }, "output_limit_ambiguous"],
+      ["reasoning", { ...validBody(), reasoning_effort: "low" }, "request_field_not_allowed"],
+      ["cache key", { ...validBody(), prompt_cache_key: "sticky" }, "request_field_not_allowed"],
+      ["parallelism", { ...validBody(), parallel_tool_calls: true }, "request_field_not_allowed"],
+      ["unknown", { ...validBody(), undocumented_multiplier: true }, "request_field_not_allowed"],
+      ["duplicate model keys", `{"model":"grok-4.5","model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"max_completion_tokens":20000}`, "request_shape_ambiguous"],
+      ["prototype key", `{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"max_completion_tokens":20000,"__proto__":{}}`, "prototype_key_denied"],
+      ["constructor key", `{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"max_completion_tokens":20000,"constructor":{}}`, "prototype_key_denied"],
+    ];
+
+    for (const [_name, body, reason] of cases) {
+      const response = await postChat(boundary.baseUrl, body);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ reason });
+    }
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it("rejects unsafe nested message and content shapes before upstream dispatch", async () => {
+    const root = makeTempRoot("paid-boundary-message-shape");
+    const upstream = await startFakeUpstream();
+    const policy = makePolicy(root, upstream.baseUrl);
+    const boundary = await startBoundary(root, policy);
+
+    const cases: Array<readonly [string, unknown, string]> = [
+      ["messages missing", { model: "grok-4.6", max_completion_tokens: 20_000 }, "messages_malformed"],
+      ["messages empty", { ...validBody(), messages: [] }, "messages_malformed"],
+      ["message unknown key", { ...validBody(), messages: [{ role: "user", content: "hello", name: "caller" }] }, "message_shape_not_allowed"],
+      ["tool role", { ...validBody(), messages: [{ role: "tool", content: "ok", tool_call_id: "call_1" }] }, "message_shape_not_allowed"],
+      ["assistant tool calls", { ...validBody(), messages: [{ role: "assistant", content: "ok", tool_calls: [] }] }, "message_shape_not_allowed"],
+      ["image content", { ...validBody(), messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.invalid/a.png" } }] }] }, "message_shape_not_allowed"],
+      ["file content", { ...validBody(), messages: [{ role: "user", content: [{ type: "file", file: { file_id: "file_123" } }] }] }, "message_shape_not_allowed"],
+      ["provider extension", { ...validBody(), messages: [{ role: "user", content: [{ type: "text", text: "hello", provider_options: { xai: {} } }] }] }, "message_shape_not_allowed"],
+      ["nested prototype", `{"model":"grok-4.6","messages":[{"role":"user","content":{"__proto__":{}}}],"max_completion_tokens":20000}`, "prototype_key_denied"],
+      ["duplicate nested keys", `{"model":"grok-4.6","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/a.png"}}],"content":"hello"}],"max_completion_tokens":20000}`, "request_shape_ambiguous"],
+    ];
+
+    for (const [_name, body, reason] of cases) {
+      const response = await postChat(boundary.baseUrl, body);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ reason });
+    }
+    expect(upstream.requests).toHaveLength(0);
+  });
+
   it("serializes concurrency and refuses after durable request-count exhaustion across restart", async () => {
     const root = makeTempRoot("paid-boundary-recovery");
     const upstream = await startFakeUpstream(150);

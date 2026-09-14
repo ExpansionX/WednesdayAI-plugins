@@ -38,6 +38,11 @@ const serverSideToolKeys = new Set([
   "x_search",
 ]);
 const canonicalOutputLimitKey = "max_completion_tokens";
+const canonicalRequestKeys = new Set(["model", "messages", canonicalOutputLimitKey]);
+const messageKeys = new Set(["content", "role"]);
+const messageRoles = new Set(["assistant", "system", "user"]);
+const prototypeSensitiveKeys = new Set(["__proto__", "constructor", "prototype"]);
+const textContentPartKeys = new Set(["text", "type"]);
 const outputLimitFieldKeys = new Set([
   canonicalOutputLimitKey,
   "completionTokens",
@@ -292,9 +297,19 @@ const validateRequestShape = (value, rawBody) => {
   if (value.model !== apiModel) {
     return { ok: false, reason: "model_not_allowed" };
   }
+  const rawTopLevelFields = collectTopLevelPropertyNames(rawBody);
+  if (!rawTopLevelFields.ok) {
+    return { ok: false, reason: "json_malformed" };
+  }
   const rawOutputLimitFields = collectOutputLimitPropertyNames(rawBody);
   if (!rawOutputLimitFields.ok) {
     return { ok: false, reason: "json_malformed" };
+  }
+  if (
+    rawTopLevelFields.prototypeKeys.length > 0 ||
+    containsPrototypeSensitiveKey(value)
+  ) {
+    return { ok: false, reason: "prototype_key_denied" };
   }
   const topLevelOutputLimitKeys = Object.keys(value).filter((key) =>
     isOutputLimitFieldKey(key),
@@ -317,18 +332,100 @@ const validateRequestShape = (value, rawBody) => {
   if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 20_000) {
     return { ok: false, reason: "output_limit_malformed" };
   }
+  if (rawTopLevelFields.duplicateKeys.length > 0) {
+    return { ok: false, reason: "request_shape_ambiguous" };
+  }
   if (value.service_tier !== undefined && value.service_tier !== "default") {
     return { ok: false, reason: "priority_tier_denied" };
   }
   if (value.batch === true || value.metadata?.batch === true) {
     return { ok: false, reason: "batch_denied" };
   }
-  for (const key of Object.keys(value)) {
-    if (serverSideToolKeys.has(key)) {
-      return { ok: false, reason: "server_side_tools_denied" };
-    }
+  const requestFieldReason = validateTopLevelRequestFields(
+    value,
+    rawTopLevelFields.keys,
+  );
+  if (requestFieldReason !== undefined) {
+    return { ok: false, reason: requestFieldReason };
+  }
+  const messageReason = validateMessages(value.messages);
+  if (messageReason !== undefined) {
+    return { ok: false, reason: messageReason };
   }
   return { ok: true };
+};
+
+const validateTopLevelRequestFields = (value, rawTopLevelKeys) => {
+  const keys = new Set([...Object.keys(value), ...rawTopLevelKeys]);
+  for (const key of keys) {
+    if (serverSideToolKeys.has(key)) {
+      return "server_side_tools_denied";
+    }
+  }
+  for (const key of keys) {
+    if (!canonicalRequestKeys.has(key)) {
+      return "request_field_not_allowed";
+    }
+  }
+  return undefined;
+};
+
+const validateMessages = (messages) => {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return "messages_malformed";
+  }
+  for (const message of messages) {
+    const reason = validateMessage(message);
+    if (reason !== undefined) {
+      return reason;
+    }
+  }
+  return undefined;
+};
+
+const validateMessage = (message) => {
+  if (!isRecord(message) || !hasOnlyKeys(message, messageKeys)) {
+    return "message_shape_not_allowed";
+  }
+  if (!messageRoles.has(message.role)) {
+    return "message_shape_not_allowed";
+  }
+  return validateMessageContent(message.content);
+};
+
+const validateMessageContent = (content) => {
+  if (typeof content === "string") {
+    return undefined;
+  }
+  if (!Array.isArray(content) || content.length === 0) {
+    return "message_shape_not_allowed";
+  }
+  for (const part of content) {
+    if (
+      !isRecord(part) ||
+      !hasOnlyKeys(part, textContentPartKeys) ||
+      part.type !== "text" ||
+      typeof part.text !== "string"
+    ) {
+      return "message_shape_not_allowed";
+    }
+  }
+  return undefined;
+};
+
+const hasOnlyKeys = (value, allowedKeys) =>
+  Object.keys(value).every((key) => allowedKeys.has(key));
+
+const containsPrototypeSensitiveKey = (value) => {
+  if (Array.isArray(value)) {
+    return value.some((item) => containsPrototypeSensitiveKey(item));
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Object.keys(value).some(
+    (key) => prototypeSensitiveKeys.has(key) || containsPrototypeSensitiveKey(value[key]),
+  );
 };
 
 const isOutputLimitFieldKey = (key) => {
@@ -337,6 +434,48 @@ const isOutputLimitFieldKey = (key) => {
   }
   const normalized = key.replace(/[^0-9A-Za-z]/g, "").toLowerCase();
   return outputLimitFieldPatterns.some((pattern) => pattern.test(normalized));
+};
+
+const collectTopLevelPropertyNames = (rawBody) => {
+  const duplicateKeys = [];
+  const keys = [];
+  const prototypeKeys = [];
+  const stack = [];
+  for (let index = 0; index < rawBody.length; index += 1) {
+    const character = rawBody[index];
+    if (character === '"') {
+      let token;
+      try {
+        token = readJsonStringToken(rawBody, index);
+      } catch {
+        return { duplicateKeys: [], keys: [], ok: false, prototypeKeys: [] };
+      }
+      const next = skipJsonWhitespace(rawBody, token.end);
+      const currentObjectKeys = stack.at(-1);
+      if (rawBody[next] === ":" && currentObjectKeys instanceof Set) {
+        if (stack.length === 1) {
+          keys.push(token.value);
+        }
+        if (currentObjectKeys.has(token.value)) {
+          duplicateKeys.push(token.value);
+        }
+        currentObjectKeys.add(token.value);
+        if (prototypeSensitiveKeys.has(token.value)) {
+          prototypeKeys.push(token.value);
+        }
+      }
+      index = token.end - 1;
+      continue;
+    }
+    if (character === "{") {
+      stack.push(new Set());
+    } else if (character === "[") {
+      stack.push(undefined);
+    } else if (character === "}" || character === "]") {
+      stack.pop();
+    }
+  }
+  return { duplicateKeys, keys, ok: true, prototypeKeys };
 };
 
 const collectOutputLimitPropertyNames = (rawBody) => {
