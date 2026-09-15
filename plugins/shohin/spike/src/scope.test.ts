@@ -284,6 +284,99 @@ const baseLaunchOptions = () => ({
 });
 
 
+// `--property=User`/`--property=Group` are deliberately NOT requested here:
+// live host verification (missions/mission-001/evidence/val-spend-001-r7a-
+// root-scope-preflight-*) confirmed `systemctl show` omits them entirely for
+// transient scope units on this systemd version, so the product does not
+// request or rely on them either.
+const rootShowArgs = () => [
+  "-n",
+  "systemctl",
+  "show",
+  scopeId,
+  "--property=Id",
+  "--property=MainPID",
+  "--property=ControlGroup",
+  "--property=SubState",
+  "--property=LoadState",
+  "--property=InvocationID",
+  "--property=IPAddressDeny",
+  "--property=IPAddressAllow",
+  "--no-pager",
+];
+
+const rootUnitSignalArgs = (signal: "SIGTERM" | "SIGKILL") => [
+  "-n",
+  "systemctl",
+  "kill",
+  "--kill-whom=all",
+  `--signal=${signal}`,
+  scopeId,
+];
+
+// Values match the actual normalized form `systemctl show` reports on this
+// host for a requested `IPAddressDeny=any` /
+// `IPAddressAllow=localhost,127.0.0.0/8,::1` (frozen in the r7a preflight
+// evidence), not the literal requested strings.
+const rootRunningIdentity = (overrides: Record<string, string | number | undefined> = {}) => ({
+  ...runningIdentity(),
+  ipAddressAllow: "127.0.0.0/8 ::1/128",
+  ipAddressDeny: "0.0.0.0/0 ::/0",
+  ...overrides,
+});
+
+const rootStoppedIdentity = (overrides: Record<string, string | number | undefined> = {}) => ({
+  ...stoppedIdentity(),
+  ipAddressAllow: undefined,
+  ipAddressDeny: undefined,
+  ...overrides,
+});
+
+const rootShowOutput = (
+  identity: ReturnType<typeof rootRunningIdentity> | ReturnType<typeof rootStoppedIdentity>,
+): CommandOutput => ({
+  status: 0,
+  stdout: [
+    `Id=${identity.id}`,
+    `MainPID=${identity.mainPid ?? 0}`,
+    ...(identity.controlGroup === undefined ? [] : [`ControlGroup=${identity.controlGroup}`]),
+    `SubState=${identity.subState ?? ""}`,
+    `LoadState=${identity.loadState ?? ""}`,
+    ...(identity.invocationId === undefined ? [] : [`InvocationID=${identity.invocationId}`]),
+    ...(identity.ipAddressDeny === undefined ? [] : [`IPAddressDeny=${identity.ipAddressDeny}`]),
+    ...(identity.ipAddressAllow === undefined ? [] : [`IPAddressAllow=${identity.ipAddressAllow}`]),
+    "",
+  ].join("\n"),
+  stderr: "",
+});
+
+const sudoOkOutput: CommandOutput = { status: 0, stdout: "", stderr: "" };
+
+const makeRootFixture = () => {
+  const command = new FakeCommandAdapter();
+  const filesystem = new FakeFilesystem();
+  const clock = new FakeClock();
+  const process = new FakeProcessAdapter();
+  command.nextPid = 4242;
+  filesystem.files.set("/proc/4242/stat", makeProcStat(4242, "998877"));
+  const controller = createScopeController({
+    clock,
+    command,
+    filesystem,
+    manager: "root",
+    payloadGroup: "david",
+    payloadUser: "david",
+    process,
+    watchdogPath,
+  });
+  return { clock, command, controller, filesystem, process };
+};
+
+const rootLaunchOptions = () => ({
+  ...baseLaunchOptions(),
+  networkAccess: "loopback-only" as const,
+});
+
 const makeWatchdogScriptFixture = (temp: string) => {
   const runDir = path.join(temp, "run");
   const fakeCgroupRoot = path.join(temp, "cgroup");
@@ -372,6 +465,27 @@ describe("Shohin systemd scope controller", () => {
     );
   });
 
+  // Loopback-only network access is refused on the ordinary `--user`
+  // manager rather than emitted: live host verification (decision069/070,
+  // AGENTS.md "Disproven isolation approach") found that user-manager
+  // `IPAddressDeny=any`/`IPAddressAllow=...` is recorded by `systemctl
+  // --user show` but is NOT enforced -- non-loopback TCP still succeeds.
+  // Asserting those properties in launch argv here would be exactly the
+  // fake-isolation shape this mission's contract requires validators to
+  // reject; only the root-managed scope controller may request it (see
+  // "requests loopback-only network properties in root scope launch argv"
+  // below).
+  it("refuses loopback-only network access on the user-managed scope controller (not enforced on this host)", async () => {
+    const { command, controller } = makeFixture();
+    await expect(
+      controller.launch({
+        ...baseLaunchOptions(),
+        networkAccess: "loopback-only",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_scope_option" });
+
+    expect(command.spawns).toHaveLength(0);
+  });
 
   it("keeps only closed launcher diagnostics on the wait handle", async () => {
     const temp = makeTempRoot("launcher-stderr");
@@ -925,6 +1039,437 @@ describe("Shohin systemd scope controller", () => {
       showArgs(),
       showArgs(),
     ]);
+  });
+});
+
+describe("Shohin root-managed scope controller (decision069/070)", () => {
+  it("builds root scope launch argv as arrays, nesting setpriv/env/watchdog/runner behind a single sudo systemd-run invocation", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      sudoOkOutput,
+      successOutput(rootStoppedIdentity()),
+      rootShowOutput(rootRunningIdentity()),
+    ];
+
+    const handle = await controller.launch(rootLaunchOptions());
+
+    expect(handle.command).toBe("sudo");
+    expect(command.spawns).toHaveLength(1);
+    const spawn = command.spawns[0];
+    expect(spawn.command).toBe("sudo");
+    expect(spawn.argv[0]).toBe("-n");
+    expect(spawn.argv[1]).toBe("systemd-run");
+    expect(spawn.argv).toEqual(
+      expect.arrayContaining(["--uid", "david", "--gid", "david", "IPAccounting=yes"]),
+    );
+    expect(spawn.argv).not.toContain("--user");
+    expect(spawn.argv).not.toContain("NoNewPrivileges=yes");
+
+    const setprivIndex = spawn.argv.indexOf("setpriv");
+    expect(setprivIndex).toBeGreaterThan(0);
+    expect(spawn.argv[setprivIndex - 1]).toBe("--");
+    expect(spawn.argv.slice(setprivIndex, setprivIndex + 3)).toEqual([
+      "setpriv",
+      "--no-new-privs",
+      "--",
+    ]);
+    expect(spawn.argv.slice(setprivIndex + 3, setprivIndex + 5)).toEqual(["env", "-i"]);
+    expect(spawn.argv).toEqual(
+      expect.arrayContaining([watchdogPath, "--", "/bin/sleep", "2"]),
+    );
+
+    // A single argv array is spawned once; every descendant (setpriv, env,
+    // watchdog, runner) is nested inside it rather than launched separately.
+    expect(command.spawns).toHaveLength(1);
+  });
+
+  it("requests loopback-only network properties in root scope launch argv (only the root manager may request enforcement)", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      sudoOkOutput,
+      successOutput(rootStoppedIdentity()),
+      rootShowOutput(rootRunningIdentity()),
+    ];
+
+    await controller.launch(rootLaunchOptions());
+
+    const spawn = command.spawns[0];
+    const executorBoundary = spawn.argv.indexOf("--");
+    const systemdArgv = spawn.argv.slice(0, executorBoundary);
+    expect(systemdArgv).toEqual(
+      expect.arrayContaining([
+        "IPAddressDeny=any",
+        "IPAddressAllow=localhost",
+        "IPAddressAllow=127.0.0.0/8",
+        "IPAddressAllow=::1",
+      ]),
+    );
+  });
+
+  it("refuses shell-unsafe topic/run id components before any argv is constructed", async () => {
+    const { command, controller } = makeRootFixture();
+    await expect(
+      controller.launch({ ...rootLaunchOptions(), runId: "run005; rm -rf /" }),
+    ).rejects.toMatchObject({ code: "invalid_scope_id" });
+    expect(command.spawns).toHaveLength(0);
+  });
+
+  it("requires an explicit payload user and group to construct a root controller", () => {
+    expect(() => createScopeController({ manager: "root" })).toThrow();
+    expect(() => createScopeController({ manager: "root", payloadUser: "david" })).toThrow();
+  });
+
+  it("requires loopback-only network access for root scope launches", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [sudoOkOutput, successOutput(rootStoppedIdentity())];
+    await expect(
+      controller.launch({ ...baseLaunchOptions(), networkAccess: "inherit" }),
+    ).rejects.toMatchObject({ code: "invalid_scope_option" });
+    expect(command.spawns).toHaveLength(0);
+  });
+
+  it("fails closed before any systemd-run invocation when noninteractive root is unavailable or refused", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [{ status: 1, stdout: "", stderr: "sudo: a password is required\n" }];
+
+    await expect(controller.launch(rootLaunchOptions())).rejects.toMatchObject({
+      code: "root_scope_sudo_unavailable",
+    });
+
+    expect(command.spawns).toHaveLength(0);
+    expect(command.execs).toHaveLength(1);
+    expect(command.execs[0]).toMatchObject({ command: "sudo", argv: ["-n", "true"] });
+  });
+
+  it("refuses to launch when the root-managed unit name already exists (collision)", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [sudoOkOutput, rootShowOutput(rootRunningIdentity())];
+
+    await expect(controller.launch(rootLaunchOptions())).rejects.toMatchObject({
+      code: "root_scope_unit_collision",
+    });
+
+    expect(command.spawns).toHaveLength(0);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      ["-n", "true"],
+      rootShowArgs(),
+    ]);
+  });
+
+  it("fails closed after launch when the reported network properties are entirely missing (property/identity mismatch)", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      sudoOkOutput,
+      successOutput(rootStoppedIdentity()),
+      // Simulates systemd silently failing to apply/record the requested
+      // IPAddressDeny/IPAddressAllow properties at all.
+      rootShowOutput(rootRunningIdentity({ ipAddressAllow: undefined, ipAddressDeny: undefined })),
+    ];
+
+    await expect(controller.launch(rootLaunchOptions())).rejects.toMatchObject({
+      code: "root_scope_property_mismatch",
+    });
+  });
+
+  it("fails closed after launch when loopback-restriction properties are recorded but do not match what was requested (recorded-but-ineffective)", async () => {
+    for (const mismatch of [
+      { ipAddressDeny: "no" },
+      { ipAddressAllow: "0.0.0.0/0" },
+    ]) {
+      const { command, controller } = makeRootFixture();
+      command.execOutputs = [
+        sudoOkOutput,
+        successOutput(rootStoppedIdentity()),
+        rootShowOutput(rootRunningIdentity(mismatch)),
+      ];
+
+      await expect(controller.launch(rootLaunchOptions())).rejects.toMatchObject({
+        code: "root_scope_property_mismatch",
+      });
+    }
+  });
+
+  it("launches successfully once sudo, collision and property checks all pass", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      sudoOkOutput,
+      successOutput(rootStoppedIdentity()),
+      rootShowOutput(rootRunningIdentity()),
+    ];
+
+    const handle = await controller.launch(rootLaunchOptions());
+    expect(handle.scopeId).toBe(scopeId);
+    expect(handle.controlPid).toBe(4242);
+    expect(command.execs).toHaveLength(3);
+  });
+
+  it("refuses to cancel a reused control PID whose start time no longer matches (PID reuse)", async () => {
+    const { command, controller, filesystem } = makeRootFixture();
+    filesystem.files.set("/proc/4242/stat", makeProcStat(4242, "111111"));
+    command.execOutputs = [rootShowOutput(rootRunningIdentity())];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "process_identity_mismatch" });
+  });
+
+  it("refuses to cancel a root scope whose live invocation identity no longer matches the recorded one (unit/generation reuse)", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      rootShowOutput(
+        rootRunningIdentity({ invocationId: "ffffffffffffffffffffffffffffffff" }),
+      ),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_identity_mismatch" });
+
+    expect(command.execs.map((entry) => entry.argv)).toEqual([rootShowArgs()]);
+  });
+
+  it("makes repeated cancellation of a stopped root scope a no-op without extra signals (idempotence)", async () => {
+    const { command, controller, filesystem, process } = makeRootFixture();
+    filesystem.files.delete("/proc/4242/stat");
+    command.execOutputs = [
+      rootShowOutput(rootRunningIdentity()),
+      sudoOkOutput,
+      rootShowOutput(rootStoppedIdentity()),
+      rootShowOutput(rootStoppedIdentity()),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).resolves.toEqual({ sentKill: false, sentTerm: true });
+    await expect(
+      controller.cancel(cancelHandle({ identity: undefined }), {
+        killAfterMs: 20,
+        pollIntervalMs: 10,
+      }),
+    ).resolves.toEqual({ sentKill: false, sentTerm: false });
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      rootShowArgs(),
+      rootUnitSignalArgs("SIGTERM"),
+      rootShowArgs(),
+      rootShowArgs(),
+    ]);
+  });
+
+  it("fails instead of reporting canceled when the root scope remains after SIGKILL (cleanup failure)", async () => {
+    const { command, controller, filesystem, process } = makeRootFixture();
+    filesystem.files.delete("/proc/4242/stat");
+    command.execOutputs = [
+      rootShowOutput(rootRunningIdentity()),
+      sudoOkOutput,
+      rootShowOutput(rootRunningIdentity()),
+      rootShowOutput(rootRunningIdentity()),
+      rootShowOutput(rootRunningIdentity()),
+      sudoOkOutput,
+      rootShowOutput(rootRunningIdentity()),
+      rootShowOutput(rootRunningIdentity()),
+    ];
+
+    await expect(
+      controller.cancel(cancelHandle(), { killAfterMs: 20, pollIntervalMs: 10 }),
+    ).rejects.toMatchObject({ code: "scope_stop_timeout" });
+
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      rootShowArgs(),
+      rootUnitSignalArgs("SIGTERM"),
+      rootShowArgs(),
+      rootShowArgs(),
+      rootShowArgs(),
+      rootUnitSignalArgs("SIGKILL"),
+      rootShowArgs(),
+      rootShowArgs(),
+    ]);
+  });
+
+  it("cancels a running root scope via the direct control PID before falling back to systemctl kill", async () => {
+    const { command, controller, process } = makeRootFixture();
+    // /proc/4242/stat is left present (matching controlStartTime "998877"),
+    // so the launcher PID is signaled directly instead of via systemctl kill.
+    command.execOutputs = [
+      rootShowOutput(rootRunningIdentity()),
+      rootShowOutput(rootStoppedIdentity()),
+    ];
+
+    const result = await controller.cancel(
+      cancelHandle({ controlPid: 4242, controlStartTime: "998877" }),
+      { killAfterMs: 20, pollIntervalMs: 10 },
+    );
+
+    expect(result).toEqual({ sentKill: false, sentTerm: true });
+    expect(process.signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([rootShowArgs(), rootShowArgs()]);
+  });
+
+  // The argv-nesting assertion in the first test above proves command
+  // construction, not containment: it never observes whether a descendant
+  // process actually shares the scope's cgroup. This test proves it via the
+  // real signal: `cgroup.events` "populated" stays 1 while a descendant is
+  // still alive inside the scope's cgroup even after the scope unit itself
+  // has gone terminal, and only drops to 0 once that descendant exits. The
+  // only signal ever sent is the exact-identity `systemctl kill
+  // --kill-whom=all` for this unit (`rootUnitSignalArgs`) -- no broad root
+  // process signal is used to reach it.
+  it("contains a descendant process in the root scope cgroup and terminates it via exact-identity systemctl kill --kill-whom=all (descendant containment)", async () => {
+    const { command, controller, filesystem, process } = makeRootFixture();
+    filesystem.files.delete("/proc/4242/stat");
+    filesystem.reads.set(cgroupEventsPath(), [
+      "populated 1\n", // initial inspect: the payload's descendant is still alive
+      "populated 1\n", // first post-SIGTERM poll: descendant still alive
+      "populated 0\n", // descendant has exited; the cgroup is now empty
+    ]);
+    command.execOutputs = [
+      rootShowOutput(rootRunningIdentity({ mainPid: 0, subState: "failed" })),
+      sudoOkOutput,
+      rootShowOutput(rootRunningIdentity({ mainPid: 0, subState: "failed" })),
+      rootShowOutput(rootRunningIdentity({ mainPid: 0, subState: "dead" })),
+    ];
+
+    const result = await controller.cancel(cancelHandle(), {
+      killAfterMs: 20,
+      pollIntervalMs: 10,
+    });
+
+    expect(result).toEqual({ sentKill: false, sentTerm: true });
+    expect(process.signals).toEqual([]);
+    expect(command.execs.map((entry) => entry.argv)).toEqual([
+      rootShowArgs(),
+      rootUnitSignalArgs("SIGTERM"),
+      rootShowArgs(),
+      rootShowArgs(),
+    ]);
+    expect(
+      filesystem.readLog.filter((entry) => entry === cgroupEventsPath()),
+    ).toHaveLength(3);
+  });
+});
+
+describe("Shohin root-managed scope live IP accounting (decision070 gotcha 2)", () => {
+  const rootAccountingShowArgs = () => [
+    "-n",
+    "systemctl",
+    "show",
+    scopeId,
+    "--property=Id",
+    "--property=SubState",
+    "--property=LoadState",
+    "--property=InvocationID",
+    "--property=IPIngressBytes",
+    "--property=IPEgressBytes",
+    "--no-pager",
+  ];
+
+  const rootAccountingShowOutput = ({
+    id = scopeId,
+    invocationId: invocation = invocationId,
+    ipEgressBytes,
+    ipIngressBytes,
+    loadState = "loaded",
+    subState = "running",
+  }: {
+    readonly id?: string;
+    readonly invocationId?: string;
+    readonly ipEgressBytes?: string;
+    readonly ipIngressBytes?: string;
+    readonly loadState?: string;
+    readonly subState?: string;
+  } = {}): CommandOutput => ({
+    status: 0,
+    stdout: [
+      `Id=${id}`,
+      `SubState=${subState}`,
+      `LoadState=${loadState}`,
+      `InvocationID=${invocation}`,
+      ...(ipIngressBytes === undefined ? [] : [`IPIngressBytes=${ipIngressBytes}`]),
+      ...(ipEgressBytes === undefined ? [] : [`IPEgressBytes=${ipEgressBytes}`]),
+      "",
+    ].join("\n"),
+    stderr: "",
+  });
+
+  it("captures a live IPIngressBytes/IPEgressBytes sample bound to the exact unit/InvocationID identity", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      rootAccountingShowOutput({ ipEgressBytes: "2048", ipIngressBytes: "4096" }),
+    ];
+
+    const sample = await controller.sampleAccounting(cancelHandle());
+
+    expect(sample).toMatchObject({
+      invocationId,
+      ipEgressBytes: 2048,
+      ipIngressBytes: 4096,
+      scopeId,
+    });
+    expect(typeof sample.capturedAt).toBe("string");
+    expect(command.execs.map((entry) => entry.argv)).toEqual([rootAccountingShowArgs()]);
+  });
+
+  it("refuses a [no data] accounting read instead of silently recording zero bytes", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      rootAccountingShowOutput({ ipEgressBytes: "[no data]", ipIngressBytes: "[no data]" }),
+    ];
+
+    await expect(controller.sampleAccounting(cancelHandle())).rejects.toMatchObject({
+      code: "scope_accounting_unavailable",
+    });
+  });
+
+  it("refuses a post-exit accounting sample instead of trusting a stale terminal-state read", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      rootAccountingShowOutput({
+        ipEgressBytes: "2048",
+        ipIngressBytes: "4096",
+        subState: "dead",
+      }),
+    ];
+
+    await expect(controller.sampleAccounting(cancelHandle())).rejects.toMatchObject({
+      code: "scope_accounting_unavailable",
+    });
+  });
+
+  it("rejects an accounting sample whose invocation identity does not match the bound scope (reused unit)", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      rootAccountingShowOutput({
+        invocationId: "ffffffffffffffffffffffffffffffff",
+        ipEgressBytes: "2048",
+        ipIngressBytes: "4096",
+      }),
+    ];
+
+    await expect(controller.sampleAccounting(cancelHandle())).rejects.toMatchObject({
+      code: "scope_identity_mismatch",
+    });
+  });
+
+  it("refuses an unbound accounting sample with no recorded identity to bind against", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      rootAccountingShowOutput({ ipEgressBytes: "2048", ipIngressBytes: "4096" }),
+    ];
+
+    await expect(
+      controller.sampleAccounting(cancelHandle({ identity: undefined })),
+    ).rejects.toMatchObject({ code: "scope_identity_unverified" });
+  });
+
+  it("refuses accounting sampling on the ordinary user-managed scope controller", async () => {
+    const { command, controller } = makeFixture();
+
+    await expect(controller.sampleAccounting(cancelHandle())).rejects.toMatchObject({
+      code: "invalid_scope_option",
+    });
+    expect(command.execs).toHaveLength(0);
   });
 });
 

@@ -186,7 +186,27 @@ export interface PaidDispatchBoundaryOptions {
   readonly pricingValidUntil: string;
 }
 
+export interface StagedRuntimeAssetRecord {
+  readonly destinationPath: string;
+  readonly mode: number;
+  readonly relativePath: string;
+  readonly sha256: string;
+  readonly sizeBytes: number;
+  readonly sourcePath: string;
+}
+
+export interface OpenCodeColdRuntimeRecord {
+  readonly assets: readonly StagedRuntimeAssetRecord[];
+  readonly cacheHome: string;
+  readonly configHome: string;
+  readonly dataHome: string;
+  readonly home: string;
+  readonly stateHome: string;
+  readonly tmpdir: string;
+}
+
 export interface PaidDispatchBoundaryRecord {
+  readonly coldRuntime: OpenCodeColdRuntimeRecord;
   readonly configPath: string;
   readonly configSha256: string;
   readonly credentialLeaf: ".local/share/opencode/auth.json";
@@ -476,9 +496,13 @@ export interface SpikeSupervisorDependencies {
   readonly clock?: SpikeSupervisorClock;
   readonly executables?: ExecutableResolver;
   readonly identity?: SpikeIdentityAdapter;
+  readonly rootScope?: ScopeController;
   readonly scope?: ScopeController;
   readonly truth?: SpikeTruthAdapter;
 }
+
+const paidRunnerRootUser = "david";
+const paidRunnerRootGroup = "david";
 
 const costRoles = ["worker", "validator", "assessor", "prewarm", "terminal"] as const;
 const defaultCapUsd = 50;
@@ -639,6 +663,8 @@ export class SpikeSupervisor {
   private readonly cancelRequests = new Map<string, Promise<SpikeCancelResult>>();
   private readonly identity: SpikeIdentityAdapter;
   private readonly maintenance = new Map<string, ActiveRunMaintenance>();
+  private readonly rootScopeFactory: () => ScopeController;
+  private rootScopeInstance: ScopeController | undefined;
   private readonly runRoots = new Map<string, string>();
   private readonly scope: ScopeController;
   private readonly truth: SpikeTruthAdapter;
@@ -648,14 +674,46 @@ export class SpikeSupervisor {
     clock = nodeClock,
     executables = defaultExecutableResolver,
     identity = defaultIdentityAdapter,
+    rootScope,
     scope = createScopeController(),
     truth = defaultTruthAdapter,
   }: SpikeSupervisorDependencies = {}) {
     this.clock = clock;
     this.executables = executables;
     this.identity = identity;
+    // The root-managed scope controller is root-capable (it invokes
+    // `sudo -n` from its first `launch()` call). Build it lazily, on first
+    // actual paid-path use, instead of eagerly for every supervisor
+    // instance -- a no-provider or ordinary-run supervisor should never
+    // hold a constructed root-capable controller it will never call.
+    this.rootScopeFactory =
+      rootScope !== undefined
+        ? () => rootScope
+        : () =>
+            createScopeController({
+              manager: "root",
+              payloadGroup: paidRunnerRootGroup,
+              payloadUser: paidRunnerRootUser,
+            });
     this.scope = scope;
     this.truth = truth;
+  }
+
+  private getRootScope(): ScopeController {
+    if (this.rootScopeInstance === undefined) {
+      this.rootScopeInstance = this.rootScopeFactory();
+    }
+    return this.rootScopeInstance;
+  }
+
+  /**
+   * Ordinary and no-provider runs stay on the existing `--user` scope
+   * (`this.scope`), unchanged. Only the paid runner path uses the
+   * operator-authorized root-managed scope (`getRootScope()`,
+   * decision069/070) so its egress can actually be restricted to loopback.
+   */
+  private scopeFor(record: { readonly paidBoundary?: unknown }): ScopeController {
+    return record.paidBoundary === undefined ? this.scope : this.getRootScope();
   }
 
   public async start(options: SpikeStartOptions): Promise<SpikeStartResult> {
@@ -754,6 +812,7 @@ export class SpikeSupervisor {
       const paidBoundary = this.preparePaidBoundary(options, {
         home,
         runDir,
+        tmpdir,
       });
 
       this.copyPristineBundle(options.waiBundleSourceDir, generationDir);
@@ -850,7 +909,13 @@ export class SpikeSupervisor {
         }),
       });
 
-      const scopeHandle = await this.scope.launch({
+      // Single predicate for both which scope manager launches this run and
+      // whether it is restricted to loopback: the root scope and the
+      // loopback-only restriction must never be derived independently, or
+      // they could diverge on this security-critical path.
+      const usesPaidRootScope = options.paidBoundary !== undefined;
+      const runScope = usesPaidRootScope ? this.getRootScope() : this.scope;
+      const scopeHandle = await runScope.launch({
         controlEnv: launch.controlEnv,
         cwd: identity.targetRepoRoot,
         executorEnv: launch.executorEnv,
@@ -862,11 +927,12 @@ export class SpikeSupervisor {
         killAfterMs: 2_000,
         runDir,
         runId,
+        networkAccess: usesPaidRootScope ? "loopback-only" : "inherit",
         runner: launch.runner,
         runtimeMaxSec: options.runnerTimeoutSec,
         topic,
       });
-      const scopeIdentity = await this.scope.inspect(scopeHandle.scopeId, scopeHandle.controlEnv);
+      const scopeIdentity = await runScope.inspect(scopeHandle.scopeId, scopeHandle.controlEnv);
       if (!scopeIdentityIsRunning(scopeIdentity)) {
         throw new SpikeSupervisorError(
           "scope_not_active",
@@ -987,7 +1053,7 @@ export class SpikeSupervisor {
         }
         const controlEnv = readRecordedControlEnvironment(record);
         await this.identity.verifyActiveRunIdentity(record);
-        const scopeIdentity = await this.scope.inspect(
+        const scopeIdentity = await this.scopeFor(record).inspect(
           record.scope.scopeId,
           controlEnv,
           record.scope.identity,
@@ -1063,7 +1129,7 @@ export class SpikeSupervisor {
         `Active run ${record.runId} is missing scope identity`,
       );
     }
-    const result = await this.scope.cancel({
+    const result = await this.scopeFor(record).cancel({
       controlEnv,
       controlPid: record.scope.controlPid,
       controlStartTime: record.scope.controlStartTime,
@@ -1137,7 +1203,7 @@ export class SpikeSupervisor {
       identity: record.scope.identity,
       scopeId: record.scope.scopeId,
     };
-    const result = await this.scope.cancel(handle);
+    const result = await this.scopeFor(record).cancel(handle);
     await this.verifyScopeStoppedBeforeTerminalPersistence(record, controlEnv);
     const alreadyStopped = !result.sentKill && !result.sentTerm;
     this.disposeRunMaintenance(runRoot, runId);
@@ -1164,7 +1230,7 @@ export class SpikeSupervisor {
     if (record.scope === undefined) {
       return;
     }
-    const scopeIdentity = await this.scope.inspect(
+    const scopeIdentity = await this.scopeFor(record).inspect(
       record.scope.scopeId,
       controlEnv,
       record.scope.identity,
@@ -1325,7 +1391,7 @@ export class SpikeSupervisor {
       }
       const controlEnv = readRecordedControlEnvironment(record);
       await this.identity.verifyActiveRunIdentity(record);
-      const scopeIdentity = await this.scope.inspect(
+      const scopeIdentity = await this.scopeFor(record).inspect(
         record.scope.scopeId,
         controlEnv,
         record.scope.identity,
@@ -1411,7 +1477,7 @@ export class SpikeSupervisor {
       }
       try {
         const controlEnv = readRecordedControlEnvironment(record);
-        const scopeIdentity = await this.scope.inspect(
+        const scopeIdentity = await this.scopeFor(record).inspect(
           record.scope.scopeId,
           controlEnv,
           record.scope.identity,
@@ -1886,6 +1952,7 @@ export class SpikeSupervisor {
     paths: {
       readonly home: string;
       readonly runDir: string;
+      readonly tmpdir: string;
     },
   ): PaidDispatchBoundaryRecord | undefined {
     const boundary = options.paidBoundary;
@@ -1897,6 +1964,12 @@ export class SpikeSupervisor {
       allowList: [paidBoundaryCredentialLeaf],
       destinationHome: paths.home,
       sourceHome: options.sourceHome,
+    });
+    const coldRuntime = prepareOpenCodeColdRuntime({
+      home: paths.home,
+      runDir: paths.runDir,
+      sourceHome: options.sourceHome,
+      tmpdir: paths.tmpdir,
     });
 
     const boundaryDir = path.join(paths.runDir, "paid-dispatch-boundary");
@@ -1911,6 +1984,10 @@ export class SpikeSupervisor {
     mkdirSync(emptyConfigDir, { recursive: true, mode: 0o700 });
     chmodSync(emptyConfigDir, 0o700);
     atomicWriteJson(configPath, opencodeConfig);
+    atomicWriteJson(
+      path.join(coldRuntime.configHome, "opencode", "opencode.json"),
+      opencodeConfig,
+    );
     const policyPath = path.join(boundaryDir, "policy.json");
     const statePath = path.join(boundaryDir, "state.json");
     const logPath = path.join(boundaryDir, "events.jsonl");
@@ -1937,6 +2014,7 @@ export class SpikeSupervisor {
     });
     chmodSync(launcherPath, 0o700);
     return {
+      coldRuntime,
       configPath,
       configSha256: `sha256:${sha256(readFileSync(configPath))}`,
       credentialLeaf: paidBoundaryCredentialLeaf,
@@ -2304,6 +2382,127 @@ const buildPaidBoundaryPolicy = ({
   };
 };
 
+const paidBoundaryColdAssetSpecs = [
+  {
+    relativePath: "opencode/models.json",
+    sourceRelativePath: ".cache/opencode/models.json",
+  },
+  {
+    relativePath: "opencode/bin/rg",
+    sourceRelativePath: ".cache/opencode/bin/rg",
+  },
+] as const;
+
+const prepareOpenCodeColdRuntime = ({
+  home,
+  runDir,
+  sourceHome,
+  tmpdir,
+}: {
+  readonly home: string;
+  readonly runDir: string;
+  readonly sourceHome: string;
+  readonly tmpdir: string;
+}): OpenCodeColdRuntimeRecord => {
+  const root = path.join(runDir, "opencode-cold-runtime");
+  ensureContained(runDir, root, "OpenCode cold runtime root");
+  const cacheHome = path.join(root, "cache");
+  const configHome = path.join(root, "config");
+  const dataHome = path.join(root, "data");
+  const stateHome = path.join(root, "state");
+  for (const directory of [root, home, cacheHome, configHome, dataHome, stateHome, tmpdir]) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+  }
+  const sourceRoot = realDirectory(sourceHome, "source HOME");
+  const assets = paidBoundaryColdAssetSpecs.map((spec) =>
+    stageOpenCodeColdAsset({
+      destinationRoot: cacheHome,
+      relativePath: spec.relativePath,
+      sourceRelativePath: spec.sourceRelativePath,
+      sourceRoot,
+    }),
+  );
+  return {
+    assets,
+    cacheHome,
+    configHome,
+    dataHome,
+    home,
+    stateHome,
+    tmpdir,
+  };
+};
+
+const stageOpenCodeColdAsset = ({
+  destinationRoot,
+  relativePath,
+  sourceRelativePath,
+  sourceRoot,
+}: {
+  readonly destinationRoot: string;
+  readonly relativePath: string;
+  readonly sourceRelativePath: string;
+  readonly sourceRoot: string;
+}): StagedRuntimeAssetRecord => {
+  const sourcePath = path.join(sourceRoot, sourceRelativePath);
+  rejectSymlinkComponentsUnderRoot(sourceRoot, sourceRelativePath);
+  let sourceStats;
+  try {
+    sourceStats = lstatSync(sourcePath);
+  } catch {
+    throw new SpikeSupervisorError(
+      "paid_boundary_refused",
+      "OpenCode cold runtime asset is missing: " + sourceRelativePath,
+    );
+  }
+  if (sourceStats.isSymbolicLink() || !sourceStats.isFile()) {
+    throw new SpikeSupervisorError(
+      "paid_boundary_refused",
+      "OpenCode cold runtime asset must be a regular file: " + sourceRelativePath,
+    );
+  }
+  const realSourcePath = realpathSync.native(sourcePath);
+  ensureContained(sourceRoot, realSourcePath, "OpenCode cold runtime asset source");
+  const destinationPath = path.join(destinationRoot, relativePath);
+  ensureContained(destinationRoot, destinationPath, "OpenCode cold runtime asset destination");
+  if (existsSync(destinationPath)) {
+    throw new SpikeSupervisorError(
+      "paid_boundary_refused",
+      "OpenCode cold runtime asset destination already exists: " + relativePath,
+    );
+  }
+  mkdirSync(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
+  chmodSync(path.dirname(destinationPath), 0o700);
+  copyFileSync(realSourcePath, destinationPath);
+  chmodSync(destinationPath, sourceStats.mode & 0o777);
+  const staged = readFileSync(destinationPath);
+  return {
+    destinationPath,
+    mode: statSync(destinationPath).mode & 0o777,
+    relativePath,
+    sha256: "sha256:" + sha256(staged),
+    sizeBytes: staged.byteLength,
+    sourcePath: realSourcePath,
+  };
+};
+
+const rejectSymlinkComponentsUnderRoot = (root: string, relativePath: string): void => {
+  let current = root;
+  for (const segment of relativePath.split("/")) {
+    current = path.join(current, segment);
+    if (!existsSync(current)) {
+      return;
+    }
+    if (lstatSync(current).isSymbolicLink()) {
+      throw new SpikeSupervisorError(
+        "paid_boundary_refused",
+        "OpenCode cold runtime asset crosses a symlink: " + relativePath,
+      );
+    }
+  }
+};
+
 const buildPaidBoundaryOpenCodeConfig = (port: number): Record<string, unknown> => ({
   $schema: "https://opencode.ai/config.json",
   autoupdate: false,
@@ -2358,8 +2557,12 @@ const paidBoundaryExecutorEnv = (
 ): Readonly<Record<string, string>> => ({
   OPENCODE_CONFIG: boundary.configPath,
   OPENCODE_CONFIG_CONTENT: readFileSync(boundary.configPath, "utf-8"),
-  OPENCODE_CONFIG_DIR: path.join(path.dirname(boundary.configPath), "empty-opencode-dir"),
+  OPENCODE_CONFIG_DIR: path.join(boundary.coldRuntime.configHome, "opencode"),
   WAI_SHOHIN_PAID_BOUNDARY: "xai-grok-4.6",
+  XDG_CACHE_HOME: boundary.coldRuntime.cacheHome,
+  XDG_CONFIG_HOME: boundary.coldRuntime.configHome,
+  XDG_DATA_HOME: boundary.coldRuntime.dataHome,
+  XDG_STATE_HOME: boundary.coldRuntime.stateHome,
 });
 
 const paidBoundaryLauncherScript = ({

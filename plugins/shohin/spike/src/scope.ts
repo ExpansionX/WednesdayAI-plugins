@@ -15,6 +15,10 @@ export type ScopeErrorCode =
   | "process_identity_mismatch"
   | "process_identity_unavailable"
   | "probe_option_requires_probe_mode"
+  | "root_scope_property_mismatch"
+  | "root_scope_sudo_unavailable"
+  | "root_scope_unit_collision"
+  | "scope_accounting_unavailable"
   | "scope_id_mismatch"
   | "scope_identity_mismatch"
   | "scope_identity_unverified"
@@ -96,12 +100,15 @@ export interface ScopeProbeOptions {
   readonly straceExecve?: boolean;
 }
 
+export type ScopeNetworkAccess = "inherit" | "loopback-only";
+
 export interface ScopeLaunchOptions {
   readonly controlEnv: Readonly<Record<string, string>>;
   readonly cwd?: string;
   readonly executorEnv: Readonly<Record<string, string>>;
   readonly heartbeat: ScopeHeartbeatOptions;
   readonly killAfterMs: number;
+  readonly networkAccess?: ScopeNetworkAccess;
   readonly probeMode?: boolean;
   readonly probes?: ScopeProbeOptions;
   readonly runDir: string;
@@ -144,9 +151,27 @@ export interface ScopeIdentity {
   readonly controlGroup?: string;
   readonly id: string;
   readonly invocationId?: string;
+  readonly ipAddressAllow?: string;
+  readonly ipAddressDeny?: string;
   readonly loadState?: string;
   readonly mainPid?: number;
   readonly subState?: string;
+}
+
+/**
+ * A single live-accounting observation, bound to the exact unit/InvocationID
+ * identity it was read from so a sample can never be attributed to a reused
+ * unit. Only ever produced from a `systemctl show` read taken while the
+ * scope is still active: `IPIngressBytes`/`IPEgressBytes` read back as
+ * `[no data]` once the scope exits (decision070 gotcha 2), so a post-exit
+ * read is refused rather than trusted as evidence.
+ */
+export interface ScopeAccountingSample {
+  readonly capturedAt: string;
+  readonly invocationId: string;
+  readonly ipEgressBytes: number;
+  readonly ipIngressBytes: number;
+  readonly scopeId: string;
 }
 
 export interface ScopeController {
@@ -160,7 +185,22 @@ export interface ScopeController {
     handle: ScopeCancelHandle,
     options?: ScopeCancelOptions,
   ): Promise<ScopeCancelResult>;
+  sampleAccounting(handle: ScopeCancelHandle): Promise<ScopeAccountingSample>;
 }
+
+/**
+ * "user" (default) launches an ordinary `systemd-run --user --scope`, unchanged
+ * from prior behavior. "root" launches a transient ROOT-managed
+ * `systemd-run --scope` via noninteractive `sudo -n`, running the payload as an
+ * explicit unprivileged `payloadUser`/`payloadGroup` (never as root itself).
+ * This is the operator-authorized decision069/070 primitive: only a
+ * root-managed scope actually enforces IPAddressDeny/IPAddressAllow on this
+ * host (see missions/mission-001/evidence/val-spend-001-r7a-root-scope-
+ * preflight-*); the equivalent `--user` scope does not. Ordinary and
+ * no-provider paths must keep using "user"; only the paid runner path may use
+ * "root".
+ */
+export type ScopeManagerMode = "root" | "user";
 
 export interface ScopeControllerDependencies {
   readonly cgroupRoot?: string;
@@ -168,7 +208,12 @@ export interface ScopeControllerDependencies {
   readonly command?: CommandAdapter;
   readonly envCommand?: string;
   readonly filesystem?: ScopeFilesystem;
+  readonly manager?: ScopeManagerMode;
+  readonly payloadGroup?: string;
+  readonly payloadUser?: string;
   readonly process?: ScopeProcessAdapter;
+  readonly setprivCommand?: string;
+  readonly sudoCommand?: string;
   readonly systemctlCommand?: string;
   readonly systemdRunCommand?: string;
   readonly watchdogPath?: string;
@@ -478,19 +523,64 @@ export const createScopeController = ({
   command = nodeCommandAdapter,
   envCommand = "env",
   filesystem = nodeFilesystem,
+  manager = "user",
+  payloadGroup,
+  payloadUser,
   process: processAdapter = nodeProcessAdapter,
+  setprivCommand = "setpriv",
+  sudoCommand = "sudo",
   systemctlCommand = "systemctl",
   systemdRunCommand = "systemd-run",
   watchdogPath = path.resolve(import.meta.dirname, "..", "scripts", "watchdog.sh"),
 }: ScopeControllerDependencies = {}): ScopeController => {
   const trustedCgroupRoot = validateAbsoluteNormalizedPath(cgroupRoot, "cgroup root");
+  if (manager === "root") {
+    assertComponent(payloadUser ?? "", "root scope payload user");
+    assertComponent(payloadGroup ?? "", "root scope payload group");
+  }
+  const invoker: ScopeManagerInvoker =
+    manager === "root"
+      ? rootScopeManagerInvoker(command, systemctlCommand, sudoCommand)
+      : userScopeManagerInvoker(command, systemctlCommand);
 
   const launch = async (
     options: ScopeLaunchOptions,
   ): Promise<ScopedRunHandle> => {
+    if (manager === "root") {
+      const preflightControlEnv = assertControlEnvironment(options.controlEnv);
+      const sudoCheck = await command.execFile(sudoCommand, ["-n", "true"], {
+        env: preflightControlEnv,
+      });
+      if (sudoCheck.status !== 0) {
+        throw new ScopeControllerError(
+          "root_scope_sudo_unavailable",
+          `Noninteractive root is unavailable: ${sudoCheck.stderr.trim()}`,
+        );
+      }
+      const precheckScopeId = buildScopeId({ runId: options.runId, topic: options.topic });
+      const existing = await inspectScope(
+        precheckScopeId,
+        preflightControlEnv,
+        invoker,
+        filesystem,
+        trustedCgroupRoot,
+      );
+      if (classifyScopeLabels(existing) !== "collected") {
+        throw new ScopeControllerError(
+          "root_scope_unit_collision",
+          `Root scope unit already exists: ${precheckScopeId}`,
+        );
+      }
+    }
+
     const spec = await buildLaunchSpec(options, {
       command,
       envCommand,
+      manager,
+      payloadGroup,
+      payloadUser,
+      setprivCommand,
+      sudoCommand,
       systemdRunCommand,
       watchdogPath,
     });
@@ -499,6 +589,18 @@ export const createScopeController = ({
       env: spec.controlEnv,
     });
     const controlStartTime = readProcessStartTime(filesystem, spawned.pid);
+
+    if (manager === "root") {
+      const launched = await inspectScope(
+        spec.scopeId,
+        spec.controlEnv,
+        invoker,
+        filesystem,
+        trustedCgroupRoot,
+      );
+      assertRootScopePropertiesEffective(launched);
+    }
+
     return {
       argv: spec.argv,
       command: spec.command,
@@ -518,8 +620,7 @@ export const createScopeController = ({
     inspectScope(
       scopeId,
       controlEnv,
-      command,
-      systemctlCommand,
+      invoker,
       filesystem,
       trustedCgroupRoot,
       recordedIdentity,
@@ -547,8 +648,7 @@ export const createScopeController = ({
     const initialIdentity = await inspectScope(
       handle.scopeId,
       controlEnv,
-      command,
-      systemctlCommand,
+      invoker,
       filesystem,
       trustedCgroupRoot,
       handle.identity,
@@ -578,24 +678,23 @@ export const createScopeController = ({
         if (!isKnownMissingProcessError(error)) {
           throw processIdentityUnavailable(handle.controlPid, error);
         }
-        await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, command, systemctlCommand);
+        await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, invoker);
       }
     } else {
-      await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, command, systemctlCommand);
+      await sendScopeSignal(handle.scopeId, "SIGTERM", controlEnv, invoker);
     }
 
     if (
       await waitForStoppedScope({
         clock,
-        command,
         controlEnv,
+        invoker,
         killAfterMs,
         pollIntervalMs,
         cgroupRoot: trustedCgroupRoot,
         filesystem,
         recordedIdentity: handle.identity,
         scopeId: handle.scopeId,
-        systemctlCommand,
       })
     ) {
       return { sentKill: false, sentTerm: true };
@@ -604,8 +703,7 @@ export const createScopeController = ({
     const escalationIdentity = await inspectScope(
       handle.scopeId,
       controlEnv,
-      command,
-      systemctlCommand,
+      invoker,
       filesystem,
       trustedCgroupRoot,
       handle.identity,
@@ -627,20 +725,19 @@ export const createScopeController = ({
       handle.controlPid,
       handle.controlStartTime,
     );
-    await sendScopeSignal(handle.scopeId, "SIGKILL", controlEnv, command, systemctlCommand);
+    await sendScopeSignal(handle.scopeId, "SIGKILL", controlEnv, invoker);
 
     if (
       await waitForStoppedScope({
         clock,
-        command,
         controlEnv,
+        invoker,
         killAfterMs,
         pollIntervalMs,
         cgroupRoot: trustedCgroupRoot,
         filesystem,
         recordedIdentity: handle.identity,
         scopeId: handle.scopeId,
-        systemctlCommand,
       })
     ) {
       return { sentKill: true, sentTerm: true };
@@ -652,7 +749,75 @@ export const createScopeController = ({
     );
   };
 
-  return { cancel, inspect, launch };
+  // Only the root-managed scope requests `IPAccounting=yes`; sampling is
+  // refused for the ordinary `--user` manager rather than returning a
+  // meaningless/absent counter. Every sample is read fresh from `systemctl
+  // show` (never a cached identity) and bound to the exact unit Id and
+  // InvocationID, so a live counter can never be attributed to a reused
+  // unit or a scope that has already exited (decision070 gotcha 2).
+  const sampleAccounting = async (
+    handle: ScopeCancelHandle,
+  ): Promise<ScopeAccountingSample> => {
+    if (invoker.showAccounting === undefined) {
+      throw new ScopeControllerError(
+        "invalid_scope_option",
+        "IP accounting sampling is only available for the root-managed scope path",
+      );
+    }
+    assertScopeId(handle.scopeId);
+    const controlEnv = assertControlEnvironment(handle.controlEnv);
+    const output = await invoker.showAccounting(handle.scopeId, controlEnv);
+    if (output.status !== 0) {
+      throw new ScopeControllerError(
+        "command_failed",
+        `systemctl show failed for ${handle.scopeId}: ${output.stderr.trim()}`,
+      );
+    }
+
+    const properties = parseSystemctlProperties(output.stdout);
+    if (properties.Id !== handle.scopeId) {
+      throw new ScopeControllerError(
+        "scope_id_mismatch",
+        `systemctl Id mismatch: expected ${handle.scopeId}, got ${properties.Id ?? "<missing>"}`,
+      );
+    }
+
+    // A post-exit `systemctl show` can still report a terminal SubState
+    // after GC clears the accounting counters; only a live scope's counters
+    // may ever be treated as evidence.
+    const subState = stateProperty(optionalNonEmptyProperty(properties.SubState));
+    if (subState === undefined || !activeScopeSubStates.has(subState)) {
+      throw new ScopeControllerError(
+        "scope_accounting_unavailable",
+        `Refusing to sample IP accounting for ${handle.scopeId}: scope is not live (SubState=${properties.SubState ?? "<missing>"})`,
+      );
+    }
+
+    const invocationId = trustedInvocationId(optionalNonEmptyProperty(properties.InvocationID));
+    const recordedInvocationId = trustedInvocationId(handle.identity?.invocationId);
+    if (invocationId === undefined || recordedInvocationId === undefined) {
+      throw new ScopeControllerError(
+        "scope_identity_unverified",
+        `Refusing to sample IP accounting for ${handle.scopeId}: missing trustworthy systemd invocation identity`,
+      );
+    }
+    if (invocationId !== recordedInvocationId) {
+      throw new ScopeControllerError(
+        "scope_identity_mismatch",
+        `Refusing to sample IP accounting for ${handle.scopeId}: systemd invocation identity changed`,
+      );
+    }
+
+    return {
+      capturedAt: new Date().toISOString(),
+      invocationId,
+      ipEgressBytes: parseAccountingByteCount(properties.IPEgressBytes, "IPEgressBytes"),
+      ipIngressBytes: parseAccountingByteCount(properties.IPIngressBytes, "IPIngressBytes"),
+      scopeId: handle.scopeId,
+    };
+  };
+
+  return { cancel, inspect, launch, sampleAccounting };
 };
 
 const buildLaunchSpec = async (
@@ -660,6 +825,11 @@ const buildLaunchSpec = async (
   dependencies: {
     readonly command: CommandAdapter;
     readonly envCommand: string;
+    readonly manager: ScopeManagerMode;
+    readonly payloadGroup?: string;
+    readonly payloadUser?: string;
+    readonly setprivCommand: string;
+    readonly sudoCommand: string;
     readonly systemdRunCommand: string;
     readonly watchdogPath: string;
   },
@@ -742,11 +912,21 @@ const buildLaunchSpec = async (
     ...runner,
   ];
 
-  const argv = [
-    "--user",
-    "--scope",
-    "--unit",
-    scopeId,
+  const networkAccess = options.networkAccess ?? "inherit";
+  // Only the operator-authorized root-managed scope actually enforces
+  // IPAddressDeny/IPAddressAllow on this host (decision069/070). A `--user`
+  // scope records the identical properties but non-loopback TCP still
+  // succeeds (see AGENTS.md "Disproven isolation approach"), so refuse this
+  // request outright here instead of emitting a known-ineffective property
+  // that a caller (or a passing test) could mistake for isolation evidence.
+  if (dependencies.manager !== "root" && networkAccess === "loopback-only") {
+    throw new ScopeControllerError(
+      "invalid_scope_option",
+      "User-managed scopes cannot enforce loopback-only network access on this host; use the root-managed scope controller instead",
+    );
+  }
+
+  const scopeProperties = [
     "--property",
     `RuntimeMaxSec=${runtimeMaxSec}s`,
     "--property",
@@ -755,6 +935,64 @@ const buildLaunchSpec = async (
     "KillMode=mixed",
     "--property",
     "SendSIGKILL=yes",
+    ...(dependencies.manager === "root" ? rootScopeLoopbackNetworkProperties(networkAccess) : []),
+  ];
+
+  if (dependencies.manager === "root") {
+    if (dependencies.payloadUser === undefined || dependencies.payloadGroup === undefined) {
+      throw new ScopeControllerError(
+        "invalid_scope_option",
+        "Root scope launch requires an explicit payload user and group",
+      );
+    }
+    if (networkAccess !== "loopback-only") {
+      throw new ScopeControllerError(
+        "invalid_scope_option",
+        "Root scope launch requires loopback-only network access",
+      );
+    }
+    // `NoNewPrivileges=yes` is rejected by systemd as a `systemd-run --scope`
+    // property ("Unknown assignment"): scopes register an already-forked PID
+    // rather than exec'ing it, so exec-time hardening must be applied inside
+    // the executed command instead, via `setpriv --no-new-privs`.
+    const argv = [
+      "-n",
+      dependencies.systemdRunCommand,
+      "--unit",
+      scopeId,
+      "--scope",
+      "--uid",
+      dependencies.payloadUser,
+      "--gid",
+      dependencies.payloadGroup,
+      ...scopeProperties,
+      "--property",
+      "IPAccounting=yes",
+      "--collect",
+      "--",
+      dependencies.setprivCommand,
+      "--no-new-privs",
+      "--",
+      dependencies.envCommand,
+      "-i",
+      ...serializeExecutorEnvironment(executorEnv),
+      watchdog,
+      ...watchdogArgv,
+    ];
+    return {
+      argv,
+      command: dependencies.sudoCommand,
+      controlEnv,
+      scopeId,
+    };
+  }
+
+  const argv = [
+    "--user",
+    "--scope",
+    "--unit",
+    scopeId,
+    ...scopeProperties,
     "--collect",
     "--",
     dependencies.envCommand,
@@ -770,6 +1008,184 @@ const buildLaunchSpec = async (
     controlEnv,
     scopeId,
   };
+};
+
+// Called ONLY for the root-managed scope path (`dependencies.manager ===
+// "root"`, guarded in `buildLaunchSpec`); a `--user` scope must never call
+// this, because `IPAddressDeny`/`IPAddressAllow` are recorded but NOT
+// enforced on this host for user-manager scopes (decision069/070,
+// AGENTS.md). Requesting "loopback-only" on the user manager is refused
+// before this function would ever be reached.
+const rootScopeLoopbackNetworkProperties = (
+  networkAccess: ScopeNetworkAccess,
+): readonly string[] => {
+  if (networkAccess === "inherit") {
+    return [];
+  }
+  if (networkAccess === "loopback-only") {
+    return [
+      "--property",
+      "IPAddressDeny=any",
+      "--property",
+      "IPAddressAllow=localhost",
+      "--property",
+      "IPAddressAllow=127.0.0.0/8",
+      "--property",
+      "IPAddressAllow=::1",
+    ];
+  }
+  throw new ScopeControllerError(
+    "invalid_scope_option",
+    "Unsupported network access profile: " + String(networkAccess),
+  );
+};
+
+// Abstracts the `systemctl show`/`systemctl kill` invocation so `inspectScope`,
+// `sendScopeSignal` and `waitForStoppedScope` are shared, unmodified, between
+// the ordinary `--user` manager and the operator-authorized root manager.
+// Only argv construction (manager scope + `sudo -n` wrapping) differs.
+interface ScopeManagerInvoker {
+  kill(
+    scopeId: string,
+    signal: ScopeSignal,
+    controlEnv: Readonly<Record<string, string>>,
+  ): Promise<CommandOutput>;
+  show(
+    scopeId: string,
+    controlEnv: Readonly<Record<string, string>>,
+  ): Promise<CommandOutput>;
+  // Only implemented by the root-managed invoker: `IPAccounting=yes` is only
+  // ever requested for root-managed scopes, so live accounting sampling is
+  // undefined (and refused) for the ordinary `--user` manager.
+  showAccounting?(
+    scopeId: string,
+    controlEnv: Readonly<Record<string, string>>,
+  ): Promise<CommandOutput>;
+}
+
+const userScopeShowProperties = [
+  "--property=Id",
+  "--property=MainPID",
+  "--property=ControlGroup",
+  "--property=SubState",
+  "--property=LoadState",
+  "--property=InvocationID",
+  "--no-pager",
+];
+
+// `User=`/`Group=`/`MainPID=` are exec-time service properties; live host
+// verification (missions/mission-001/evidence/val-spend-001-r7a-root-scope-
+// preflight-*) confirmed `systemctl show` omits them entirely for transient
+// scope units on this systemd version, for both `--user` and root-managed
+// scopes, regardless of `--uid`/`--gid`. Requesting them here is harmless
+// (systemd ignores unknown/inapplicable `--property` names), but the payload
+// UID/GID cannot be re-verified this way; that is proven once, generally, by
+// the frozen preflight evidence (`id` inside the scope), not per launch.
+const rootScopeShowProperties = [
+  "--property=Id",
+  "--property=MainPID",
+  "--property=ControlGroup",
+  "--property=SubState",
+  "--property=LoadState",
+  "--property=InvocationID",
+  "--property=IPAddressDeny",
+  "--property=IPAddressAllow",
+  "--no-pager",
+];
+
+const userScopeManagerInvoker = (
+  command: CommandAdapter,
+  systemctlCommand: string,
+): ScopeManagerInvoker => ({
+  kill: (scopeId, signal, controlEnv) =>
+    command.execFile(
+      systemctlCommand,
+      ["--user", "kill", "--kill-whom=all", `--signal=${signal}`, scopeId],
+      { env: controlEnv },
+    ),
+  show: (scopeId, controlEnv) =>
+    command.execFile(
+      systemctlCommand,
+      ["--user", "show", scopeId, ...userScopeShowProperties],
+      { env: controlEnv },
+    ),
+});
+
+// Distinct from `rootScopeShowProperties`: kept as a separate, dedicated
+// `systemctl show` query so every ordinary inspect/cancel poll of the
+// existing 9 root RED-first cases is unaffected by adding accounting
+// support. `SubState`/`InvocationID` are requested alongside the byte
+// counters so a single call both proves liveness and binds the sample to
+// the exact unit identity (decision070 gotcha 2).
+const rootScopeAccountingProperties = [
+  "--property=Id",
+  "--property=SubState",
+  "--property=LoadState",
+  "--property=InvocationID",
+  "--property=IPIngressBytes",
+  "--property=IPEgressBytes",
+  "--no-pager",
+];
+
+const rootScopeManagerInvoker = (
+  command: CommandAdapter,
+  systemctlCommand: string,
+  sudoCommand: string,
+): ScopeManagerInvoker => ({
+  kill: (scopeId, signal, controlEnv) =>
+    command.execFile(
+      sudoCommand,
+      ["-n", systemctlCommand, "kill", "--kill-whom=all", `--signal=${signal}`, scopeId],
+      { env: controlEnv },
+    ),
+  show: (scopeId, controlEnv) =>
+    command.execFile(
+      sudoCommand,
+      ["-n", systemctlCommand, "show", scopeId, ...rootScopeShowProperties],
+      { env: controlEnv },
+    ),
+  showAccounting: (scopeId, controlEnv) =>
+    command.execFile(
+      sudoCommand,
+      ["-n", systemctlCommand, "show", scopeId, ...rootScopeAccountingProperties],
+      { env: controlEnv },
+    ),
+});
+
+// Defense-in-depth for the "recorded-but-ineffective" host-primitive class of
+// failure already disproven for user-manager scopes (decision069/070): even
+// though a root-managed scope is the operator-proven mechanism, a launched
+// scope's own reported network properties must still match what was
+// requested before the caller is allowed to treat the handle as usable.
+//
+// `User=`/`Group=` are NOT checked here: live host verification (missions/
+// mission-001/evidence/val-spend-001-r7a-root-scope-preflight-*) confirmed
+// `systemctl show` omits them entirely for transient scope units on this
+// systemd version, for both `--user` and root-managed scopes. Payload
+// UID/GID is instead proven once, generally, by that same frozen preflight
+// evidence (`id` inside the scope reported `uid=1000(david) gid=1000(david)`),
+// not re-derived per launch from an unavailable property.
+//
+// systemd normalizes the requested `IPAddressDeny=any` /
+// `IPAddressAllow=localhost,127.0.0.0/8,::1` properties into CIDR form when
+// read back (observed on this host: `IPAddressDeny=0.0.0.0/0 ::/0`,
+// `IPAddressAllow=127.0.0.0/8 ::1/128`), so effectiveness is checked by
+// substring rather than exact string equality against the requested literal.
+const assertRootScopePropertiesEffective = (identity: ScopeIdentity): void => {
+  const deny = identity.ipAddressDeny ?? "";
+  if (!deny.includes("0.0.0.0/0") || !deny.includes("::/0")) {
+    throw new ScopeControllerError(
+      "root_scope_property_mismatch",
+      `Root scope IPAddressDeny property does not deny all non-loopback traffic: ${identity.ipAddressDeny ?? "<missing>"}`,
+    );
+  }
+  const allow = identity.ipAddressAllow ?? "";
+  if (!allow.includes("127.0.0.0/8") || !allow.includes("::1")) {
+    throw new ScopeControllerError(
+      "root_scope_property_mismatch",
+      `Root scope IPAddressAllow property is missing loopback allow entries: ${identity.ipAddressAllow ?? "<missing>"}`,
+    );
+  }
 };
 
 const verifyProcessIdentityForCancel = (
@@ -816,33 +1232,30 @@ const verifyProcessIdentityForEscalation = (
 const waitForStoppedScope = async ({
   cgroupRoot,
   clock,
-  command,
   controlEnv,
   filesystem,
+  invoker,
   killAfterMs,
   pollIntervalMs,
   recordedIdentity,
   scopeId,
-  systemctlCommand,
 }: {
   readonly cgroupRoot: string;
   readonly clock: ScopeClock;
-  readonly command: CommandAdapter;
   readonly controlEnv: Readonly<Record<string, string>>;
   readonly filesystem: ScopeFilesystem;
+  readonly invoker: ScopeManagerInvoker;
   readonly killAfterMs: number;
   readonly pollIntervalMs: number;
   readonly recordedIdentity: ScopeIdentity | undefined;
   readonly scopeId: string;
-  readonly systemctlCommand: string;
 }): Promise<boolean> => {
   let elapsedMs = 0;
   while (elapsedMs < killAfterMs) {
     const identity = await inspectScope(
       scopeId,
       controlEnv,
-      command,
-      systemctlCommand,
+      invoker,
       filesystem,
       cgroupRoot,
       recordedIdentity,
@@ -894,14 +1307,9 @@ const sendScopeSignal = async (
   scopeId: string,
   signal: ScopeSignal,
   controlEnv: Readonly<Record<string, string>>,
-  command: CommandAdapter,
-  systemctlCommand: string,
+  invoker: ScopeManagerInvoker,
 ): Promise<void> => {
-  const output = await command.execFile(
-    systemctlCommand,
-    ["--user", "kill", "--kill-whom=all", `--signal=${signal}`, scopeId],
-    { env: controlEnv },
-  );
+  const output = await invoker.kill(scopeId, signal, controlEnv);
   if (output.status !== 0) {
     throw new ScopeControllerError(
       "command_failed",
@@ -1169,30 +1577,14 @@ const parseCgroupEvents = (content: string, eventsPath: string): ScopeCgroupMemb
 const inspectScope = async (
   scopeId: string,
   controlEnvInput: Readonly<Record<string, string>>,
-  command: CommandAdapter,
-  systemctlCommand: string,
+  invoker: ScopeManagerInvoker,
   filesystem: ScopeFilesystem,
   cgroupRoot: string,
   recordedIdentity?: ScopeIdentity,
 ): Promise<ScopeIdentity> => {
   assertScopeId(scopeId);
   const controlEnv = assertControlEnvironment(controlEnvInput);
-  const output = await command.execFile(
-    systemctlCommand,
-    [
-      "--user",
-      "show",
-      scopeId,
-      "--property=Id",
-      "--property=MainPID",
-      "--property=ControlGroup",
-      "--property=SubState",
-      "--property=LoadState",
-      "--property=InvocationID",
-      "--no-pager",
-    ],
-    { env: controlEnv },
-  );
+  const output = await invoker.show(scopeId, controlEnv);
   if (output.status !== 0) {
     throw new ScopeControllerError(
       "command_failed",
@@ -1212,6 +1604,8 @@ const inspectScope = async (
     controlGroup: optionalNonEmptyProperty(properties.ControlGroup),
     id: properties.Id,
     invocationId: optionalNonEmptyProperty(properties.InvocationID),
+    ipAddressAllow: optionalNonEmptyProperty(properties.IPAddressAllow),
+    ipAddressDeny: optionalNonEmptyProperty(properties.IPAddressDeny),
     loadState: optionalNonEmptyProperty(properties.LoadState),
     mainPid: parseOptionalPositiveInteger(properties.MainPID),
     subState: optionalNonEmptyProperty(properties.SubState),
@@ -1389,6 +1783,40 @@ const parseOptionalPositiveInteger = (value: string | undefined): number | undef
   }
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+// `systemd` reports the literal string `[no data]` for `IPIngressBytes`/
+// `IPEgressBytes` once its BPF accounting counters are gone -- which can
+// happen before the unit is fully collected, not only after (decision070
+// gotcha 2). Never fold that into a zero-byte reading; refuse it as
+// unusable evidence instead.
+const parseAccountingByteCount = (value: string | undefined, label: string): number => {
+  if (value === undefined || value.length === 0) {
+    throw new ScopeControllerError(
+      "scope_accounting_unavailable",
+      `${label} was not reported`,
+    );
+  }
+  if (value === "[no data]") {
+    throw new ScopeControllerError(
+      "scope_accounting_unavailable",
+      `${label} returned [no data]; refusing to treat this as zero bytes`,
+    );
+  }
+  if (!/^[0-9]+$/.test(value)) {
+    throw new ScopeControllerError(
+      "scope_accounting_unavailable",
+      `${label} is not a valid byte count: ${value}`,
+    );
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new ScopeControllerError(
+      "scope_accounting_unavailable",
+      `${label} exceeds the safe integer range: ${value}`,
+    );
+  }
+  return parsed;
 };
 
 const parseProcStatStartTime = (stat: string): string => {

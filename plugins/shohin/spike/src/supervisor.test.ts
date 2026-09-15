@@ -31,6 +31,7 @@ import {
 } from "./supervisor.js";
 import { enumerateExpectedTaskManifest } from "./evidence.js";
 import type {
+  ScopeAccountingSample,
   ScopeCancelHandle,
   ScopeCancelResult,
   ScopeController,
@@ -107,6 +108,17 @@ class FakeScopeController implements ScopeController {
       this.identity = stoppedScopeIdentity();
     }
     return this.cancelResult;
+  }
+
+  public async sampleAccounting(handle: ScopeCancelHandle): Promise<ScopeAccountingSample> {
+    this.assertExpectedControlEnv(handle.controlEnv);
+    return {
+      capturedAt: "2026-09-15T00:00:00.000Z",
+      invocationId: handle.identity?.invocationId ?? "0123456789abcdef0123456789abcdef",
+      ipEgressBytes: 0,
+      ipIngressBytes: 0,
+      scopeId: handle.scopeId,
+    };
   }
 
   private assertExpectedControlEnv(env: Readonly<Record<string, string>>): void {
@@ -272,6 +284,14 @@ const makePaidOracle = (): ModelCostOracle => ({
   ) as ModelCostOracle["roles"],
 });
 
+const writePaidBoundaryColdAssets = (sourceHome: string): void => {
+  const cacheRoot = path.join(sourceHome, ".cache", "opencode");
+  mkdirSync(path.join(cacheRoot, "bin"), { recursive: true });
+  writeFileSync(path.join(cacheRoot, "models.json"), '{"xai":{"grok-4.6":{"id":"grok-4.6"}}}\n');
+  writeFileSync(path.join(cacheRoot, "bin", "rg"), "#!/bin/sh\nexit 0\n");
+  chmodSync(path.join(cacheRoot, "bin", "rg"), 0o755);
+};
+
 const paidModelIds = {
   assessor: "xai/grok-4.6",
   prewarm: "xai/grok-4.6",
@@ -379,6 +399,9 @@ const ensureCommittedTargetFixture = (targetRoot: string): string => {
 const makeSupervisor = (root: string) => {
   const clock = new FakeClock();
   const scope = new FakeScopeController();
+  // Only the paid runner path uses the operator-authorized root-managed
+  // scope (decision069/070); ordinary/no-provider runs stay on `scope`.
+  const rootScope = new FakeScopeController();
   const identity = new FakeIdentityAdapter();
   const executables = new FakeExecutableResolver();
   const repoRoot = path.join(root, "repo");
@@ -401,11 +424,13 @@ const makeSupervisor = (root: string) => {
     PATH: "/usr/bin:/bin",
     XDG_RUNTIME_DIR: "/run/user/1000",
   };
+  rootScope.expectedControlEnv = scope.expectedControlEnv;
 
   const dependencies: SpikeSupervisorDependencies = {
     clock,
     executables,
     identity,
+    rootScope,
     scope,
     truth: {
       verifyExitedRun: async () => ({
@@ -425,6 +450,7 @@ const makeSupervisor = (root: string) => {
     executables,
     identity,
     repoRoot,
+    rootScope,
     scope,
     supervisor: new SpikeSupervisor(dependencies),
     targetRoot,
@@ -658,7 +684,8 @@ describe("SpikeSupervisor", () => {
       path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
       "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
     );
-    const { scope, supervisor } = makeSupervisor(root);
+    writePaidBoundaryColdAssets(sourceHome);
+    const { rootScope, scope, supervisor } = makeSupervisor(root);
 
     await supervisor.start(startOptions(root, {
       allowLocalTestUpstreamBaseUrl: undefined,
@@ -666,6 +693,10 @@ describe("SpikeSupervisor", () => {
       modelIds: paidModelIds,
       paidBoundary: makePaidBoundary({ allowLocalTestUpstreamBaseUrl: "http://127.0.0.1:65530/v1" }),
     }));
+
+    // Only the paid runner path uses the operator-authorized root-managed
+    // scope (decision069/070); the ordinary user scope must stay untouched.
+    expect(scope.launches).toHaveLength(0);
 
     const record = readRecord(path.join(root, "run-data"));
     const runDir = path.join(root, "run-data", "run007");
@@ -675,6 +706,33 @@ describe("SpikeSupervisor", () => {
       route: "/v1/responses",
       upstreamKind: "loopback-test",
     });
+    expect(record.paidBoundary!.coldRuntime).toMatchObject({
+      cacheHome: path.join(runDir, "opencode-cold-runtime", "cache"),
+      configHome: path.join(runDir, "opencode-cold-runtime", "config"),
+      dataHome: path.join(runDir, "opencode-cold-runtime", "data"),
+      home: path.join(runDir, "HOME"),
+      stateHome: path.join(runDir, "opencode-cold-runtime", "state"),
+      tmpdir: path.join(runDir, "tmp"),
+    });
+    expect(record.paidBoundary!.coldRuntime.assets.map((asset) => asset.relativePath).sort()).toEqual([
+      "opencode/bin/rg",
+      "opencode/models.json",
+    ]);
+    expect(record.paidBoundary!.coldRuntime.assets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relativePath: "opencode/models.json",
+          sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          sourcePath: path.join(sourceHome, ".cache", "opencode", "models.json"),
+        }),
+        expect.objectContaining({
+          mode: 0o755,
+          relativePath: "opencode/bin/rg",
+          sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          sourcePath: path.join(sourceHome, ".cache", "opencode", "bin", "rg"),
+        }),
+      ]),
+    );
     expect(record.runnerGeneration!.diffs.map((diff) => diff.name)).toEqual([
       "shohin-observability",
       "shohin-paid-boundary-opencode",
@@ -690,6 +748,12 @@ describe("SpikeSupervisor", () => {
     };
     expect(config.provider.xai.options.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
     expect(JSON.stringify(config)).not.toContain("api.x.ai");
+    expect(
+      readFileSync(
+        path.join(record.paidBoundary!.coldRuntime.configHome, "opencode", "opencode.json"),
+        "utf-8",
+      ),
+    ).toBe(readFileSync(record.paidBoundary!.configPath, "utf-8"));
     const policy = JSON.parse(readFileSync(record.paidBoundary!.policyPath, "utf-8")) as {
       allowed: { maxRequests: number; maxOutputTokens: number; maxSerializedBodyBytes: number };
       pricing: { wholeRunMaxUsd: number };
@@ -707,21 +771,47 @@ describe("SpikeSupervisor", () => {
       upstream: { baseUrl: "http://127.0.0.1:65530/v1" },
     });
 
-    const launch = scope.launches[0];
+    const launch = rootScope.launches[0];
     expect(launch.runner).toEqual([
       record.paidBoundary!.launcherPath,
       "/resolved/bash",
       path.join(record.runnerGeneration!.path, "wai-dag-run.sh"),
       "shohin-phase-0-spike",
     ]);
+    expect(launch.networkAccess).toBe("loopback-only");
     expect(launch.executorEnv).toMatchObject({
       OPENCODE_CONFIG: record.paidBoundary!.configPath,
-      OPENCODE_CONFIG_DIR: path.join(path.dirname(record.paidBoundary!.configPath), "empty-opencode-dir"),
+      OPENCODE_CONFIG_DIR: path.join(record.paidBoundary!.coldRuntime.configHome, "opencode"),
       WAI_SHOHIN_PAID_BOUNDARY: "xai-grok-4.6",
+      XDG_CACHE_HOME: record.paidBoundary!.coldRuntime.cacheHome,
+      XDG_CONFIG_HOME: record.paidBoundary!.coldRuntime.configHome,
+      XDG_DATA_HOME: record.paidBoundary!.coldRuntime.dataHome,
+      XDG_STATE_HOME: record.paidBoundary!.coldRuntime.stateHome,
     });
     expect(launch.executorEnv.OPENCODE_CONFIG_CONTENT).toContain("xai/grok-4.6");
     expect(launch.executorEnv.OPENCODE_CONFIG_CONTENT).not.toContain("api.x.ai");
+    expect(Object.keys(launch.executorEnv).filter((key) => /PROXY|CA_BUNDLE|SSL_CERT|UPDATE|TELEMETRY|CATALOG/i.test(key))).toEqual([]);
     expect(record.spendLedger.totalReservedUsd).toBe(12.8);
+  });
+
+  it("refuses paid OpenCode launch when cold runtime assets are missing", async () => {
+    const root = makeTempRoot("paid-boundary-missing-assets");
+    const sourceHome = path.join(root, "source-home");
+    mkdirSync(path.join(sourceHome, ".local", "share", "opencode"), { recursive: true });
+    writeFileSync(
+      path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
+      "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
+    );
+    const { scope, supervisor } = makeSupervisor(root);
+
+    await expect(
+      supervisor.start(startOptions(root, {
+        costOracle: makePaidOracle(),
+        modelIds: paidModelIds,
+        paidBoundary: makePaidBoundary({ allowLocalTestUpstreamBaseUrl: "http://127.0.0.1:65530/v1" }),
+      })),
+    ).rejects.toMatchObject({ code: "paid_boundary_refused" });
+    expect(scope.launches).toHaveLength(0);
   });
 
   it("refuses project OpenCode config bypasses before paid boundary launch", async () => {
@@ -732,6 +822,7 @@ describe("SpikeSupervisor", () => {
       path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
       "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
     );
+    writePaidBoundaryColdAssets(sourceHome);
     const { scope, supervisor, targetRoot } = makeSupervisor(root);
     writeFileSync(path.join(targetRoot, "opencode.json"), "{\"provider\":{\"xai\":{}}}\n");
 
