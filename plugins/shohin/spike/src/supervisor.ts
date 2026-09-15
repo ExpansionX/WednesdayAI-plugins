@@ -1971,6 +1971,24 @@ export class SpikeSupervisor {
       sourceHome: options.sourceHome,
       tmpdir: paths.tmpdir,
     });
+    // The `copyAllowedHome` call above places the credential at
+    // `$HOME/.local/share/opencode/auth.json` (kept for back-compat), but
+    // `XDG_DATA_HOME` is pinned to `coldRuntime.dataHome` for this run
+    // (paidBoundaryExecutorEnv below), and a real installed OpenCode 1.18.31
+    // only reads credentials from `$XDG_DATA_HOME/opencode/auth.json` —
+    // confirmed by a live strace of the actual binary. Without this, every
+    // real paid run would fail closed with a spurious ProviderAuthError
+    // despite a syntactically valid staged credential. Reuses the same
+    // fail-closed regular-file/symlink/collision checks as the cache asset
+    // staging below; kept out of `coldRuntime.assets` (a public audit trail
+    // for non-secret cache assets) to keep the credential's provenance
+    // separate even though only a hash, never the raw value, is recorded.
+    stageOpenCodeColdAsset({
+      destinationRoot: coldRuntime.dataHome,
+      relativePath: "opencode/auth.json",
+      sourceRelativePath: paidBoundaryCredentialLeaf,
+      sourceRoot: realDirectory(options.sourceHome, "source HOME"),
+    });
 
     const boundaryDir = path.join(paths.runDir, "paid-dispatch-boundary");
     mkdirSync(boundaryDir, { recursive: true, mode: 0o700 });
@@ -2393,7 +2411,11 @@ const paidBoundaryColdAssetSpecs = [
   },
 ] as const;
 
-const prepareOpenCodeColdRuntime = ({
+// Exported (in addition to its internal `preparePaidBoundary` caller) so
+// integration proof harnesses and validators can stage the exact same cold
+// OpenCode runtime the paid dispatch path uses, instead of reimplementing
+// its symlink/special-file/collision checks and risking drift.
+export const prepareOpenCodeColdRuntime = ({
   home,
   runDir,
   sourceHome,
@@ -2552,7 +2574,10 @@ const buildPaidBoundaryOpenCodeConfig = (port: number): Record<string, unknown> 
   },
 });
 
-const paidBoundaryExecutorEnv = (
+// Exported alongside `prepareOpenCodeColdRuntime` for the same reason: an
+// integration proof must build the exact executor-env keys the real paid
+// path requests, not a hand-copied list that can silently drift.
+export const paidBoundaryExecutorEnv = (
   boundary: PaidDispatchBoundaryRecord,
 ): Readonly<Record<string, string>> => ({
   OPENCODE_CONFIG: boundary.configPath,

@@ -591,14 +591,30 @@ export const createScopeController = ({
     const controlStartTime = readProcessStartTime(filesystem, spawned.pid);
 
     if (manager === "root") {
-      const launched = await inspectScope(
-        spec.scopeId,
-        spec.controlEnv,
-        invoker,
-        filesystem,
-        trustedCgroupRoot,
-      );
-      assertRootScopePropertiesEffective(launched);
+      try {
+        const launched = await inspectScope(
+          spec.scopeId,
+          spec.controlEnv,
+          invoker,
+          filesystem,
+          trustedCgroupRoot,
+        );
+        assertRootScopePropertiesEffective(launched);
+      } catch (error) {
+        // The transient scope (and its payload) can already be live at this
+        // point even though we are about to refuse to hand back a handle;
+        // never leave it running just because the caller never received a
+        // handle to cancel. Best-effort SIGKILL by exact scope id, then
+        // rethrow the ORIGINAL error untouched (a cleanup failure here,
+        // e.g. the unit already exited, must never mask the real refusal).
+        try {
+          await sendScopeSignal(spec.scopeId, "SIGKILL", spec.controlEnv, invoker);
+        } catch {
+          // Ignore: the unit may already be gone, or cleanup may itself be
+          // impossible; the caller still needs the original error below.
+        }
+        throw error;
+      }
     }
 
     return {

@@ -1171,6 +1171,49 @@ describe("Shohin root-managed scope controller (decision069/070)", () => {
     });
   });
 
+  it("best-effort SIGKILLs the already-spawned scope by exact id when the post-launch property check fails, instead of leaving it running with no handle to cancel", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      sudoOkOutput,
+      successOutput(rootStoppedIdentity()),
+      // The scope is genuinely live at this point (spawn already happened);
+      // simulate systemd having failed to record the requested properties.
+      rootShowOutput(rootRunningIdentity({ ipAddressAllow: undefined, ipAddressDeny: undefined })),
+      // Cleanup kill call.
+      { status: 0, stdout: "", stderr: "" },
+    ];
+
+    await expect(controller.launch(rootLaunchOptions())).rejects.toMatchObject({
+      code: "root_scope_property_mismatch",
+    });
+
+    expect(command.execs).toHaveLength(4);
+    expect(command.execs[3].command).toBe("sudo");
+    expect(command.execs[3].argv.slice(0, 5)).toEqual([
+      "-n",
+      "systemctl",
+      "kill",
+      "--kill-whom=all",
+      "--signal=SIGKILL",
+    ]);
+    expect(command.execs[3].argv[5]).toMatch(/^shohin-.*\.scope$/);
+  });
+
+  it("still surfaces the original property-mismatch error even when the best-effort cleanup kill itself fails (e.g. the unit already exited)", async () => {
+    const { command, controller } = makeRootFixture();
+    command.execOutputs = [
+      sudoOkOutput,
+      successOutput(rootStoppedIdentity()),
+      rootShowOutput(rootRunningIdentity({ ipAddressAllow: undefined, ipAddressDeny: undefined })),
+      { status: 1, stdout: "", stderr: "Unit not loaded.\n" },
+    ];
+
+    await expect(controller.launch(rootLaunchOptions())).rejects.toMatchObject({
+      code: "root_scope_property_mismatch",
+    });
+    expect(command.execs).toHaveLength(4);
+  });
+
   it("fails closed after launch when loopback-restriction properties are recorded but do not match what was requested (recorded-but-ineffective)", async () => {
     for (const mismatch of [
       { ipAddressDeny: "no" },

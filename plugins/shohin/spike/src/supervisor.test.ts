@@ -682,7 +682,10 @@ describe("SpikeSupervisor", () => {
     mkdirSync(path.join(sourceHome, ".local", "share", "opencode"), { recursive: true });
     writeFileSync(
       path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
-      "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
+      // "api" (not "api_key") is the real OpenCode auth.json credential
+      // type; a real installed OpenCode 1.18.31 rejects an unrecognized
+      // type with a ProviderAuthError even though the file is present.
+      "{\"xai\":{\"type\":\"api\",\"key\":\"fake-placeholder\"}}\n",
     );
     writePaidBoundaryColdAssets(sourceHome);
     const { rootScope, scope, supervisor } = makeSupervisor(root);
@@ -742,6 +745,17 @@ describe("SpikeSupervisor", () => {
       .toContain("run --pure --format json");
     expect(readFileSync(path.join(runDir, "HOME", ".local", "share", "opencode", "auth.json"), "utf-8"))
       .toContain("fake-placeholder");
+    // The credential must ALSO land under XDG_DATA_HOME/opencode/auth.json:
+    // that is the only location a real installed OpenCode actually reads
+    // once XDG_DATA_HOME is pinned to the cold runtime data root (confirmed
+    // by a live strace of the real binary), so the `$HOME/.local/share`
+    // copy above is not sufficient on its own.
+    expect(
+      readFileSync(
+        path.join(record.paidBoundary!.coldRuntime.dataHome, "opencode", "auth.json"),
+        "utf-8",
+      ),
+    ).toContain("fake-placeholder");
 
     const config = JSON.parse(readFileSync(record.paidBoundary!.configPath, "utf-8")) as {
       provider: { xai: { options: { baseURL: string } } };
@@ -800,7 +814,10 @@ describe("SpikeSupervisor", () => {
     mkdirSync(path.join(sourceHome, ".local", "share", "opencode"), { recursive: true });
     writeFileSync(
       path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
-      "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
+      // "api" (not "api_key") is the real OpenCode auth.json credential
+      // type; a real installed OpenCode 1.18.31 rejects an unrecognized
+      // type with a ProviderAuthError even though the file is present.
+      "{\"xai\":{\"type\":\"api\",\"key\":\"fake-placeholder\"}}\n",
     );
     const { scope, supervisor } = makeSupervisor(root);
 
@@ -820,7 +837,10 @@ describe("SpikeSupervisor", () => {
     mkdirSync(path.join(sourceHome, ".local", "share", "opencode"), { recursive: true });
     writeFileSync(
       path.join(sourceHome, ".local", "share", "opencode", "auth.json"),
-      "{\"xai\":{\"type\":\"api_key\",\"key\":\"fake-placeholder\"}}\n",
+      // "api" (not "api_key") is the real OpenCode auth.json credential
+      // type; a real installed OpenCode 1.18.31 rejects an unrecognized
+      // type with a ProviderAuthError even though the file is present.
+      "{\"xai\":{\"type\":\"api\",\"key\":\"fake-placeholder\"}}\n",
     );
     writePaidBoundaryColdAssets(sourceHome);
     const { scope, supervisor, targetRoot } = makeSupervisor(root);
