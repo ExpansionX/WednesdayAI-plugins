@@ -237,10 +237,10 @@ const makeOracle = (reservationUsd = 5): ModelCostOracle => ({
 });
 
 const makePaidBoundary = (overrides: Partial<PaidDispatchBoundaryOptions> = {}): PaidDispatchBoundaryOptions => ({
-  capUsd: 3.2,
+  capUsd: 12.8,
   kind: "xai-grok-4.6-local-forwarder-v1",
   maxOutputTokens: 20_000,
-  maxRequests: 5,
+  maxRequests: 20,
   maxSerializedBodyBytes: 100_000,
   pricingReviewedAt: new Date().toISOString(),
   pricingValidUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
@@ -248,7 +248,7 @@ const makePaidBoundary = (overrides: Partial<PaidDispatchBoundaryOptions> = {}):
 });
 
 const makePaidOracle = (): ModelCostOracle => ({
-  capUsd: 3.2,
+  capUsd: 12.8,
   roles: Object.fromEntries(
     (["worker", "validator", "assessor", "prewarm", "terminal"] satisfies CostRole[]).map(
       (role) => [
@@ -672,7 +672,7 @@ describe("SpikeSupervisor", () => {
     expect(record.paidBoundary).toMatchObject({
       credentialLeaf: ".local/share/opencode/auth.json",
       mode: "test",
-      route: "/v1/chat/completions",
+      route: "/v1/responses",
       upstreamKind: "loopback-test",
     });
     expect(record.runnerGeneration!.diffs.map((diff) => diff.name)).toEqual([
@@ -700,10 +700,10 @@ describe("SpikeSupervisor", () => {
     expect(policy).toMatchObject({
       allowed: {
         maxOutputTokens: 20_000,
-        maxRequests: 5,
+        maxRequests: 20,
         maxSerializedBodyBytes: 100_000,
       },
-      pricing: { wholeRunMaxUsd: 3.2 },
+      pricing: { wholeRunMaxUsd: 12.8 },
       upstream: { baseUrl: "http://127.0.0.1:65530/v1" },
     });
 
@@ -721,7 +721,7 @@ describe("SpikeSupervisor", () => {
     });
     expect(launch.executorEnv.OPENCODE_CONFIG_CONTENT).toContain("xai/grok-4.6");
     expect(launch.executorEnv.OPENCODE_CONFIG_CONTENT).not.toContain("api.x.ai");
-    expect(record.spendLedger.totalReservedUsd).toBe(3.2);
+    expect(record.spendLedger.totalReservedUsd).toBe(12.8);
   });
 
   it("refuses project OpenCode config bypasses before paid boundary launch", async () => {

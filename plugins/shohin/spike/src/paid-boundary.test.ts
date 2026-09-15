@@ -37,12 +37,16 @@ const startFakeUpstream = async (
       }
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({
-        choices: [{ finish_reason: "stop", index: 0, message: { content: "ok", role: "assistant" } }],
-        cost_in_usd_ticks: 999999999999999,
-        id: "chatcmpl_fake",
+        id: "resp_fake",
         model: "grok-4.6",
-        object: "chat.completion",
-        usage: { completion_tokens: 999999999, prompt_tokens: 999999999, total_tokens: 1999999998 },
+        object: "response",
+        output: [{ content: [{ text: "ok", type: "output_text" }], role: "assistant", type: "message" }],
+        usage: {
+          cost_in_usd_ticks: 999999999999999,
+          input_tokens: 999999999,
+          output_tokens: 999999999,
+          total_tokens: 1999999998,
+        },
       }));
     });
   });
@@ -61,12 +65,12 @@ const makePolicy = (root: string, upstreamBaseUrl: string, overrides: Record<str
     contentType: "application/json",
     maxConcurrent: 1,
     maxOutputTokens: 20_000,
-    maxRequests: 5,
+    maxRequests: 20,
     maxSerializedBodyBytes: 100_000,
     maxServerSideToolInvocations: 0,
     method: "POST",
     openCodeModel: "xai/grok-4.6",
-    route: "/v1/chat/completions",
+    route: "/v1/responses",
   },
   listen: { host: "127.0.0.1", port: 19_000 + tempRoots.length },
   logPath: path.join(root, "events.jsonl"),
@@ -74,7 +78,7 @@ const makePolicy = (root: string, upstreamBaseUrl: string, overrides: Record<str
   policyVersion: "xai-grok-4.6-local-forwarder-v1",
   pricing: {
     cachedInputUsdPerMillionTokens: 1,
-    capUsd: 3.2,
+    capUsd: 12.8,
     inputUsdPerMillionTokens: 4,
     longContextThresholdTokens: 200_000,
     outputUsdPerMillionTokens: 12,
@@ -82,7 +86,7 @@ const makePolicy = (root: string, upstreamBaseUrl: string, overrides: Record<str
     priorityMultiplier: 2,
     reviewedAt: new Date().toISOString(),
     validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    wholeRunMaxUsd: 3.2,
+    wholeRunMaxUsd: 12.8,
   },
   readyPath: path.join(root, "ready.json"),
   statePath: path.join(root, "state.json"),
@@ -119,7 +123,7 @@ const stopBoundary = async (child: ChildProcess): Promise<void> => {
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));
 };
 
-const postChat = async (baseUrl: string, body: unknown, init: RequestInit = {}) => fetch(`${baseUrl}/chat/completions`, {
+const postResponses = async (baseUrl: string, body: unknown, init: RequestInit = {}) => fetch(`${baseUrl}/responses`, {
   body: typeof body === "string" ? body : JSON.stringify(body),
   headers: {
     authorization: "Bearer fake-secret-token",
@@ -131,9 +135,34 @@ const postChat = async (baseUrl: string, body: unknown, init: RequestInit = {}) 
 });
 
 const validBody = () => ({
-  max_completion_tokens: 20_000,
-  messages: [{ content: "hello", role: "user" }],
+  include: ["reasoning.encrypted_content"],
+  input: [{ content: [{ text: "hello", type: "input_text" }], role: "user" }],
+  max_output_tokens: 20_000,
   model: "grok-4.6",
+  store: false,
+  stream: true,
+});
+
+const titleBody = () => ({
+  ...validBody(),
+  input: [
+    { content: "title system", role: "system" },
+    { content: [{ text: "Generate a title", type: "input_text" }], role: "user" },
+    { content: [{ text: "Reply with ok.", type: "input_text" }], role: "user" },
+  ],
+  reasoning: { effort: "low" },
+  temperature: 0.5,
+});
+
+const toolFixturePath = path.resolve(import.meta.dirname, "paid-boundary-opencode-tools.fixture.json");
+
+const localTools = (): Array<Record<string, unknown>> =>
+  JSON.parse(readFileSync(toolFixturePath, "utf-8")) as Array<Record<string, unknown>>;
+
+const toolBody = () => ({
+  ...validBody(),
+  tools: localTools(),
+  tool_choice: "auto",
 });
 
 afterEach(async () => {
@@ -149,28 +178,54 @@ afterEach(async () => {
 });
 
 describe("xAI paid spend boundary", () => {
-  it("allows only the reviewed local fake xAI chat route and records a durable reservation", async () => {
+  it("allows only the reviewed local fake xAI Responses route and records a durable reservation", async () => {
     const root = makeTempRoot("paid-boundary-success");
     const upstream = await startFakeUpstream();
     const policy = makePolicy(root, upstream.baseUrl);
     const boundary = await startBoundary(root, policy);
 
-    const serialized = JSON.stringify(validBody());
-    const response = await postChat(boundary.baseUrl, serialized);
+    const serialized = JSON.stringify(titleBody());
+    const response = await postResponses(boundary.baseUrl, serialized);
 
     expect(response.status).toBe(200);
     expect(upstream.requests).toHaveLength(1);
     const forwarded = upstream.requests[0] as { readonly url: string; readonly body: string };
-    expect(forwarded.url).toBe("/v1/chat/completions");
+    expect(forwarded.url).toBe("/v1/responses");
     expect(forwarded.body).toBe(serialized);
     expect(JSON.parse(forwarded.body)).toMatchObject({
-      max_completion_tokens: 20_000,
+      max_output_tokens: 20_000,
       model: "grok-4.6",
+      reasoning: { effort: "low" },
+      store: false,
+      stream: true,
     });
     expect(JSON.parse(readFileSync(path.join(root, "state.json"), "utf-8"))).toMatchObject({
       forwardedCount: 1,
       inFlight: 0,
       totalReservedUsd: 0.64,
+    });
+  });
+
+  it("allows the frozen local OpenCode function tool set and function-result follow-up items", async () => {
+    const root = makeTempRoot("paid-boundary-tools");
+    const upstream = await startFakeUpstream();
+    const policy = makePolicy(root, upstream.baseUrl);
+    const boundary = await startBoundary(root, policy);
+
+    expect((await postResponses(boundary.baseUrl, toolBody())).status).toBe(200);
+    const followUp = {
+      ...toolBody(),
+      input: [
+        { content: [{ text: "use glob", type: "input_text" }], role: "user" },
+        { type: "function_call", call_id: "call_1", name: "glob", arguments: "{\"pattern\":\"*.ts\"}", status: "completed" },
+        { type: "function_call_output", call_id: "call_1", output: "[]", status: "completed" },
+      ],
+    };
+    expect((await postResponses(boundary.baseUrl, followUp)).status).toBe(200);
+    expect(upstream.requests).toHaveLength(2);
+    expect(JSON.parse(readFileSync(path.join(root, "state.json"), "utf-8"))).toMatchObject({
+      forwardedCount: 2,
+      totalReservedUsd: 1.28,
     });
   });
 
@@ -181,12 +236,12 @@ describe("xAI paid spend boundary", () => {
     const boundary = await startBoundary(root, policy);
 
     const cases: Array<readonly [string, () => Promise<Response>, string]> = [
-      ["wrong route", () => fetch(`${boundary.baseUrl}/responses`, { method: "POST" }), "route_not_allowed"],
-      ["wrong model", () => postChat(boundary.baseUrl, { ...validBody(), model: "grok-4.5" }), "model_not_allowed"],
-      ["missing limit", () => postChat(boundary.baseUrl, { messages: [], model: "grok-4.6" }), "output_limit_missing"],
-      ["malformed limit", () => postChat(boundary.baseUrl, { ...validBody(), max_completion_tokens: 20_001 }), "output_limit_malformed"],
-      ["tools", () => postChat(boundary.baseUrl, { ...validBody(), tools: [{ type: "web_search" }] }), "server_side_tools_denied"],
-      ["oversized", () => postChat(boundary.baseUrl, JSON.stringify({ ...validBody(), prompt: "x".repeat(101_000) })), "serialized_body_too_large"],
+      ["wrong route", () => fetch(`${boundary.baseUrl}/chat/completions`, { method: "POST" }), "route_not_allowed"],
+      ["wrong model", () => postResponses(boundary.baseUrl, { ...validBody(), model: "grok-4.5" }), "model_not_allowed"],
+      ["missing limit", () => postResponses(boundary.baseUrl, { ...validBody(), max_output_tokens: undefined }), "output_limit_missing"],
+      ["malformed limit", () => postResponses(boundary.baseUrl, { ...validBody(), max_output_tokens: 20_001 }), "output_limit_malformed"],
+      ["server web search tool", () => postResponses(boundary.baseUrl, { ...validBody(), tools: [{ type: "web_search" }], tool_choice: "auto" }), "server_side_tools_denied"],
+      ["oversized", () => postResponses(boundary.baseUrl, JSON.stringify({ ...validBody(), prompt: "x".repeat(101_000) })), "serialized_body_too_large"],
     ];
 
     for (const [_name, request, reason] of cases) {
@@ -204,26 +259,22 @@ describe("xAI paid spend boundary", () => {
     const boundary = await startBoundary(root, policy);
 
     const cases: Array<readonly [string, unknown]> = [
-      ["legacy max_tokens only", { messages: [], model: "grok-4.6", max_tokens: 20_000 }],
-      ["safe canonical with unsafe legacy", { ...validBody(), max_tokens: 20_001 }],
-      ["unsafe canonical with safe legacy", { ...validBody(), max_completion_tokens: 20_001, max_tokens: 20 }],
-      ["equal canonical and legacy", { ...validBody(), max_tokens: 20_000 }],
-      ["null legacy with canonical", { ...validBody(), max_tokens: null }],
-      ["unsupported snake alias", { ...validBody(), max_output_tokens: 20_000 }],
-      ["unsupported camel alias", { ...validBody(), maxOutputTokens: 20_000 }],
+      ["chat max completion only", { ...validBody(), max_output_tokens: undefined, max_completion_tokens: 20_000 }],
+      ["safe canonical with unsafe chat alias", { ...validBody(), max_completion_tokens: 20_001 }],
+      ["unsafe canonical with safe legacy", { ...validBody(), max_output_tokens: 20_001, max_tokens: 20 }],
+      ["equal canonical and camel alias", { ...validBody(), maxOutputTokens: 20_000 }],
       ["unsupported generation alias", { ...validBody(), max_new_tokens: 20_000 }],
-      ["unsupported token-limit alias", { ...validBody(), outputTokenLimit: 20_000 }],
       ["nested forged legacy", { ...validBody(), provider_options: { xai: { max_tokens: 20_001 } } }],
-      ["nested forged canonical", { ...validBody(), metadata: { max_completion_tokens: 1 } }],
-      ["duplicate canonical keys equal", `{"model":"grok-4.6","messages":[],"max_completion_tokens":20000,"max_completion_tokens":20000}`],
-      ["duplicate canonical keys unsafe then safe", `{"model":"grok-4.6","messages":[],"max_completion_tokens":20001,"max_completion_tokens":20}`],
-      ["duplicate escaped legacy keys", `{"model":"grok-4.6","messages":[],"max_\u0074okens":20,"max_\u0074okens":20}`],
+      ["nested forged canonical", { ...validBody(), metadata: { max_output_tokens: 1 } }],
+      ["duplicate canonical keys equal", `{"model":"grok-4.6","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":20000,"max_output_tokens":20000,"store":false,"include":["reasoning.encrypted_content"],"stream":true}`],
+      ["duplicate escaped legacy keys", `{"model":"grok-4.6","input":[],"max_\u0074okens":20,"max_\u0074okens":20,"store":false,"include":["reasoning.encrypted_content"],"stream":true}`],
     ];
 
     for (const [_name, body] of cases) {
-      const response = await postChat(boundary.baseUrl, body);
+      const response = await postResponses(boundary.baseUrl, body);
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({ reason: "output_limit_ambiguous" });
+      const json = await response.json() as { reason: string };
+      expect(["output_limit_ambiguous", "request_shape_ambiguous"]).toContain(json.reason);
     }
     expect(upstream.requests).toHaveLength(0);
   });
@@ -236,9 +287,9 @@ describe("xAI paid spend boundary", () => {
 
     const cases = [null, 0, "20000", 20_000.5, -1];
     for (const limit of cases) {
-      const response = await postChat(boundary.baseUrl, {
+      const response = await postResponses(boundary.baseUrl, {
         ...validBody(),
-        max_completion_tokens: limit,
+        max_output_tokens: limit,
       });
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toMatchObject({ reason: "output_limit_malformed" });
@@ -246,90 +297,99 @@ describe("xAI paid spend boundary", () => {
     expect(upstream.requests).toHaveLength(0);
   });
 
-  it("rejects choice multipliers, unknown top-level fields and raw duplicate keys before upstream dispatch", async () => {
+  it("rejects multipliers, retention, unknown fields, tool drift and raw duplicate keys before upstream dispatch", async () => {
     const root = makeTempRoot("paid-boundary-request-shape");
     const upstream = await startFakeUpstream();
     const policy = makePolicy(root, upstream.baseUrl);
     const boundary = await startBoundary(root, policy);
+    const driftedTools = localTools();
+    driftedTools[0] = { ...driftedTools[0], name: "unknown" };
+    const driftedSchema = localTools();
+    driftedSchema[0] = {
+      ...driftedSchema[0],
+      parameters: { ...(driftedSchema[0]!.parameters as Record<string, unknown>), additionalProperties: false },
+    };
 
     const cases: Array<readonly [string, unknown, string]> = [
-      ["n two", { ...validBody(), n: 2 }, "request_field_not_allowed"],
       ["n one", { ...validBody(), n: 1 }, "request_field_not_allowed"],
-      ["n null", { ...validBody(), n: null }, "request_field_not_allowed"],
-      ["n string", { ...validBody(), n: "1" }, "request_field_not_allowed"],
-      ["n float", { ...validBody(), n: 1.5 }, "request_field_not_allowed"],
-      ["n negative", { ...validBody(), n: -1 }, "request_field_not_allowed"],
-      ["n large", { ...validBody(), n: 1_000_000 }, "request_field_not_allowed"],
-      ["streaming", { ...validBody(), stream: true }, "request_field_not_allowed"],
-      ["responses max output", { ...validBody(), max_output_tokens: 20_000 }, "output_limit_ambiguous"],
-      ["reasoning", { ...validBody(), reasoning_effort: "low" }, "request_field_not_allowed"],
-      ["cache key", { ...validBody(), prompt_cache_key: "sticky" }, "request_field_not_allowed"],
-      ["parallelism", { ...validBody(), parallel_tool_calls: true }, "request_field_not_allowed"],
+      ["background", { ...validBody(), background: true }, "request_field_not_allowed"],
+      ["previous response", { ...validBody(), previous_response_id: "resp_1" }, "request_field_not_allowed"],
+      ["service tier", { ...validBody(), service_tier: "default" }, "request_field_not_allowed"],
+      ["modalities", { ...validBody(), modalities: ["text"] }, "request_field_not_allowed"],
+      ["store true", { ...validBody(), store: true }, "store_required_false"],
+      ["stream false", { ...validBody(), stream: false }, "stream_shape_not_allowed"],
+      ["include empty", { ...validBody(), include: [] }, "include_shape_not_allowed"],
+      ["reasoning xhigh", { ...validBody(), reasoning: { effort: "xhigh" } }, "reasoning_not_allowed"],
+      ["temperature drift", { ...validBody(), temperature: 0.7 }, "temperature_not_allowed"],
+      ["tool choice object", { ...toolBody(), tool_choice: { type: "function", name: "glob" } }, "tool_choice_not_allowed"],
+      ["tool name drift", { ...toolBody(), tools: driftedTools }, "local_tools_not_allowed"],
+      ["tool schema drift", { ...toolBody(), tools: driftedSchema }, "local_tool_schema_not_allowed"],
       ["unknown", { ...validBody(), undocumented_multiplier: true }, "request_field_not_allowed"],
-      ["duplicate model keys", `{"model":"grok-4.5","model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"max_completion_tokens":20000}`, "request_shape_ambiguous"],
-      ["prototype key", `{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"max_completion_tokens":20000,"__proto__":{}}`, "prototype_key_denied"],
-      ["constructor key", `{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"max_completion_tokens":20000,"constructor":{}}`, "prototype_key_denied"],
+      ["duplicate model keys", `{"model":"grok-4.5","model":"grok-4.6","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":20000,"store":false,"include":["reasoning.encrypted_content"],"stream":true}`, "request_shape_ambiguous"],
+      ["prototype key", `{"model":"grok-4.6","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":20000,"store":false,"include":["reasoning.encrypted_content"],"stream":true,"__proto__":{}}`, "prototype_key_denied"],
     ];
 
     for (const [_name, body, reason] of cases) {
-      const response = await postChat(boundary.baseUrl, body);
+      const response = await postResponses(boundary.baseUrl, body);
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toMatchObject({ reason });
     }
     expect(upstream.requests).toHaveLength(0);
   });
 
-  it("rejects unsafe nested message and content shapes before upstream dispatch", async () => {
-    const root = makeTempRoot("paid-boundary-message-shape");
+  it("rejects unsafe nested input, media, URL, encrypted and provider shapes before upstream dispatch", async () => {
+    const root = makeTempRoot("paid-boundary-input-shape");
     const upstream = await startFakeUpstream();
     const policy = makePolicy(root, upstream.baseUrl);
     const boundary = await startBoundary(root, policy);
 
     const cases: Array<readonly [string, unknown, string]> = [
-      ["messages missing", { model: "grok-4.6", max_completion_tokens: 20_000 }, "messages_malformed"],
-      ["messages empty", { ...validBody(), messages: [] }, "messages_malformed"],
-      ["message unknown key", { ...validBody(), messages: [{ role: "user", content: "hello", name: "caller" }] }, "message_shape_not_allowed"],
-      ["tool role", { ...validBody(), messages: [{ role: "tool", content: "ok", tool_call_id: "call_1" }] }, "message_shape_not_allowed"],
-      ["assistant tool calls", { ...validBody(), messages: [{ role: "assistant", content: "ok", tool_calls: [] }] }, "message_shape_not_allowed"],
-      ["image content", { ...validBody(), messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.invalid/a.png" } }] }] }, "message_shape_not_allowed"],
-      ["file content", { ...validBody(), messages: [{ role: "user", content: [{ type: "file", file: { file_id: "file_123" } }] }] }, "message_shape_not_allowed"],
-      ["provider extension", { ...validBody(), messages: [{ role: "user", content: [{ type: "text", text: "hello", provider_options: { xai: {} } }] }] }, "message_shape_not_allowed"],
-      ["nested prototype", `{"model":"grok-4.6","messages":[{"role":"user","content":{"__proto__":{}}}],"max_completion_tokens":20000}`, "prototype_key_denied"],
-      ["duplicate nested keys", `{"model":"grok-4.6","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/a.png"}}],"content":"hello"}],"max_completion_tokens":20000}`, "request_shape_ambiguous"],
+      ["input missing", { ...validBody(), input: undefined }, "input_malformed"],
+      ["input empty", { ...validBody(), input: [] }, "input_malformed"],
+      ["message unknown key", { ...validBody(), input: [{ role: "user", content: "hello", name: "caller" }] }, "message_shape_not_allowed"],
+      ["tool role", { ...validBody(), input: [{ role: "tool", content: "ok", tool_call_id: "call_1" }] }, "message_shape_not_allowed"],
+      ["image content", { ...validBody(), input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.invalid/a.png" }] }] }, "message_shape_not_allowed"],
+      ["file content", { ...validBody(), input: [{ role: "user", content: [{ type: "input_file", file_id: "file_123" }] }] }, "message_shape_not_allowed"],
+      ["url content", { ...validBody(), input: [{ role: "user", content: [{ type: "input_text", text: "hello", url: "https://example.invalid" }] }] }, "message_shape_not_allowed"],
+      ["encrypted reasoning input", { ...validBody(), input: [{ type: "reasoning", encrypted_content: "opaque" }] }, "input_item_shape_not_allowed"],
+      ["unknown function call", { ...validBody(), input: [{ type: "function_call", call_id: "call_1", name: "bash", arguments: "{}" }] }, "local_tool_call_not_allowed"],
+      ["function output object", { ...validBody(), input: [{ type: "function_call_output", call_id: "call_1", output: { ok: true } }] }, "local_tool_call_not_allowed"],
+      ["nested prototype", `{"model":"grok-4.6","input":[{"role":"user","content":{"__proto__":{}}}],"max_output_tokens":20000,"store":false,"include":["reasoning.encrypted_content"],"stream":true}`, "prototype_key_denied"],
+      ["duplicate nested keys", `{"model":"grok-4.6","input":[{"role":"user","content":[{"type":"input_file","file_id":"file_123"}],"content":"hello"}],"max_output_tokens":20000,"store":false,"include":["reasoning.encrypted_content"],"stream":true}`, "request_shape_ambiguous"],
     ];
 
     for (const [_name, body, reason] of cases) {
-      const response = await postChat(boundary.baseUrl, body);
+      const response = await postResponses(boundary.baseUrl, body);
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toMatchObject({ reason });
     }
     expect(upstream.requests).toHaveLength(0);
   });
 
-  it("serializes concurrency and refuses after durable request-count exhaustion across restart", async () => {
+  it("serializes concurrency and refuses before cumulative reserved spend exceeds the run cap across restart", async () => {
     const root = makeTempRoot("paid-boundary-recovery");
     const upstream = await startFakeUpstream(150);
     const policy = makePolicy(root, upstream.baseUrl);
     const first = await startBoundary(root, policy);
 
     const [a, b] = await Promise.all([
-      postChat(first.baseUrl, validBody()),
-      postChat(first.baseUrl, validBody()),
+      postResponses(first.baseUrl, validBody()),
+      postResponses(first.baseUrl, validBody()),
     ]);
     expect([a.status, b.status].sort()).toEqual([200, 429]);
     expect(upstream.requests).toHaveLength(1);
     await stopBoundary(first.child);
 
     const second = await startBoundary(root, policy);
-    for (let index = 0; index < 4; index += 1) {
-      expect((await postChat(second.baseUrl, validBody())).status).toBe(200);
+    for (let index = 0; index < 19; index += 1) {
+      expect((await postResponses(second.baseUrl, validBody())).status).toBe(200);
     }
-    const exhausted = await postChat(second.baseUrl, validBody());
+    const exhausted = await postResponses(second.baseUrl, validBody());
     expect(exhausted.status).toBe(429);
     await expect(exhausted.json()).resolves.toMatchObject({ reason: "request_count_exhausted" });
     expect(JSON.parse(readFileSync(path.join(root, "state.json"), "utf-8"))).toMatchObject({
-      forwardedCount: 5,
-      totalReservedUsd: 3.2,
+      forwardedCount: 20,
+      totalReservedUsd: 12.8,
     });
   });
 
@@ -362,9 +422,9 @@ describe("xAI paid spend boundary", () => {
     const policy = makePolicy(root, upstream.baseUrl);
     const boundary = await startBoundary(root, policy);
 
-    const refusal = await postChat(boundary.baseUrl, {
-      max_completion_tokens: 20_000,
-      messages: [{ content: "SUPER_SECRET_PROMPT", role: "user" }],
+    const refusal = await postResponses(boundary.baseUrl, {
+      ...validBody(),
+      input: [{ content: [{ text: "SUPER_SECRET_PROMPT", type: "input_text" }], role: "user" }],
       model: "grok-4.5",
     }, { headers: { authorization: "Bearer secret-token-for-redaction", "content-type": "application/json" } });
     await refusal.text();

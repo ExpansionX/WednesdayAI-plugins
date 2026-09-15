@@ -15,34 +15,47 @@ import http from "node:http";
 import path from "node:path";
 
 const policyVersion = "xai-grok-4.6-local-forwarder-v1";
-const allowedRoute = "/v1/chat/completions";
+const allowedRoute = "/v1/responses";
 const allowedMethod = "POST";
 const allowedContentType = "application/json";
 const openCodeModel = "xai/grok-4.6";
 const apiModel = "grok-4.6";
 const productionUpstream = "https://api.x.ai/v1";
-const serverSideToolKeys = new Set([
+const serverSideToolTypes = new Set([
   "code_execution",
   "code_interpreter",
   "collections_search",
+  "computer",
+  "file",
   "file_search",
-  "function_call",
-  "functions",
+  "image_generation",
+  "mcp",
   "mcp_servers",
   "remote_mcp",
-  "search_parameters",
-  "tools",
-  "tool_choice",
+  "url_context",
   "web_search",
-  "web_search_options",
   "x_search",
 ]);
-const canonicalOutputLimitKey = "max_completion_tokens";
-const canonicalRequestKeys = new Set(["model", "messages", canonicalOutputLimitKey]);
+const canonicalOutputLimitKey = "max_output_tokens";
+const canonicalRequestKeys = new Set([
+  "include",
+  "input",
+  canonicalOutputLimitKey,
+  "model",
+  "reasoning",
+  "store",
+  "stream",
+  "temperature",
+  "tool_choice",
+  "tools",
+]);
 const messageKeys = new Set(["content", "role"]);
 const messageRoles = new Set(["assistant", "system", "user"]);
 const prototypeSensitiveKeys = new Set(["__proto__", "constructor", "prototype"]);
-const textContentPartKeys = new Set(["text", "type"]);
+const inputTextContentPartKeys = new Set(["text", "type"]);
+const functionCallInputKeys = new Set(["arguments", "call_id", "id", "name", "status", "type"]);
+const functionCallOutputInputKeys = new Set(["call_id", "output", "status", "type"]);
+const toolDefinitionKeys = new Set(["description", "name", "parameters", "type"]);
 const outputLimitFieldKeys = new Set([
   canonicalOutputLimitKey,
   "completionTokens",
@@ -75,6 +88,16 @@ const outputLimitFieldPatterns = [
   /^tokens?(?:limit|to(?:generate|sample))$/,
   /^num(?:output|predict)$/,
 ];
+const allowedInclude = ["reasoning.encrypted_content"];
+const allowedLocalToolParameterHashes = new Map([
+  ["glob", "81485ea54ec6ed67295d49bf587fbc164b0dada7e88e13fbc0666fce682b0c9a"],
+  ["grep", "bca2c463002d2b35f407ac439903f4cc60e5c959d1f0b120bc8db79cb6164186"],
+  ["read", "5cd0fd9b62187b430644f7e4e789efe5181020866389c2d09c81a819eaa8f1d1"],
+  ["skill", "6d7fe20566aa41d39228c37073e201a8bbb7e48611e6f3081b23f6f204c9aa02"],
+  ["task", "4c2cbd4ccf12b79052ecb8cf849f1b6ca1e131da0683d31bb4c296fc87a93bb3"],
+  ["todowrite", "d4cdff4382ab64cca022aaeb857121f2c6487418ae170507cb5ff6b911e51f29"],
+  ["webfetch", "2b976318570ef73f218faaf7b99426cf841022379dc527a0b3249e28ab3782d7"],
+]);
 
 const policyPath = process.argv[2];
 if (!policyPath) {
@@ -311,6 +334,9 @@ const validateRequestShape = (value, rawBody) => {
   ) {
     return { ok: false, reason: "prototype_key_denied" };
   }
+  if (rawTopLevelFields.duplicateKeys.length > 0) {
+    return { ok: false, reason: "request_shape_ambiguous" };
+  }
   const topLevelOutputLimitKeys = Object.keys(value).filter((key) =>
     isOutputLimitFieldKey(key),
   );
@@ -332,15 +358,6 @@ const validateRequestShape = (value, rawBody) => {
   if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 20_000) {
     return { ok: false, reason: "output_limit_malformed" };
   }
-  if (rawTopLevelFields.duplicateKeys.length > 0) {
-    return { ok: false, reason: "request_shape_ambiguous" };
-  }
-  if (value.service_tier !== undefined && value.service_tier !== "default") {
-    return { ok: false, reason: "priority_tier_denied" };
-  }
-  if (value.batch === true || value.metadata?.batch === true) {
-    return { ok: false, reason: "batch_denied" };
-  }
   const requestFieldReason = validateTopLevelRequestFields(
     value,
     rawTopLevelFields.keys,
@@ -348,20 +365,23 @@ const validateRequestShape = (value, rawBody) => {
   if (requestFieldReason !== undefined) {
     return { ok: false, reason: requestFieldReason };
   }
-  const messageReason = validateMessages(value.messages);
-  if (messageReason !== undefined) {
-    return { ok: false, reason: messageReason };
+  const controlsReason = validateResponsesControls(value);
+  if (controlsReason !== undefined) {
+    return { ok: false, reason: controlsReason };
+  }
+  const inputReason = validateResponsesInput(value.input);
+  if (inputReason !== undefined) {
+    return { ok: false, reason: inputReason };
+  }
+  const toolsReason = validateResponsesTools(value);
+  if (toolsReason !== undefined) {
+    return { ok: false, reason: toolsReason };
   }
   return { ok: true };
 };
 
 const validateTopLevelRequestFields = (value, rawTopLevelKeys) => {
   const keys = new Set([...Object.keys(value), ...rawTopLevelKeys]);
-  for (const key of keys) {
-    if (serverSideToolKeys.has(key)) {
-      return "server_side_tools_denied";
-    }
-  }
   for (const key of keys) {
     if (!canonicalRequestKeys.has(key)) {
       return "request_field_not_allowed";
@@ -370,16 +390,158 @@ const validateTopLevelRequestFields = (value, rawTopLevelKeys) => {
   return undefined;
 };
 
-const validateMessages = (messages) => {
-  if (!Array.isArray(messages) || messages.length === 0) {
-    return "messages_malformed";
+const validateResponsesControls = (value) => {
+  if (value.store !== false) {
+    return "store_required_false";
   }
-  for (const message of messages) {
-    const reason = validateMessage(message);
+  if (value.stream !== true) {
+    return "stream_shape_not_allowed";
+  }
+  if (
+    !Array.isArray(value.include) ||
+    value.include.length !== allowedInclude.length ||
+    value.include.some((item, index) => item !== allowedInclude[index])
+  ) {
+    return "include_shape_not_allowed";
+  }
+  if (value.temperature !== undefined && value.temperature !== 0.5) {
+    return "temperature_not_allowed";
+  }
+  if (value.reasoning !== undefined) {
+    if (
+      !isRecord(value.reasoning) ||
+      !hasOnlyKeys(value.reasoning, new Set(["effort"])) ||
+      value.reasoning.effort !== "low"
+    ) {
+      return "reasoning_not_allowed";
+    }
+  }
+  return undefined;
+};
+
+const validateResponsesInput = (input) => {
+  if (!Array.isArray(input) || input.length === 0) {
+    return "input_malformed";
+  }
+  for (const item of input) {
+    const reason = validateResponsesInputItem(item);
     if (reason !== undefined) {
       return reason;
     }
   }
+  return undefined;
+};
+
+const validateResponsesInputItem = (item) => {
+  if (!isRecord(item)) {
+    return "input_item_shape_not_allowed";
+  }
+  if (Object.hasOwn(item, "role") || Object.hasOwn(item, "content")) {
+    return validateMessage(item);
+  }
+  if (item.type === "function_call") {
+    return validateFunctionCallInput(item);
+  }
+  if (item.type === "function_call_output") {
+    return validateFunctionCallOutputInput(item);
+  }
+  return "input_item_shape_not_allowed";
+};
+
+const validateFunctionCallInput = (item) => {
+  if (!hasOnlyKeys(item, functionCallInputKeys)) {
+    return "input_item_shape_not_allowed";
+  }
+  if (
+    typeof item.call_id !== "string" ||
+    typeof item.name !== "string" ||
+    typeof item.arguments !== "string" ||
+    !allowedLocalToolParameterHashes.has(item.name)
+  ) {
+    return "local_tool_call_not_allowed";
+  }
+  if (item.id !== undefined && typeof item.id !== "string") {
+    return "input_item_shape_not_allowed";
+  }
+  if (item.status !== undefined && item.status !== "completed") {
+    return "input_item_shape_not_allowed";
+  }
+  try {
+    const parsed = JSON.parse(item.arguments);
+    if (!isRecord(parsed)) {
+      return "local_tool_call_not_allowed";
+    }
+  } catch {
+    return "local_tool_call_not_allowed";
+  }
+  return undefined;
+};
+
+const validateFunctionCallOutputInput = (item) => {
+  if (!hasOnlyKeys(item, functionCallOutputInputKeys)) {
+    return "input_item_shape_not_allowed";
+  }
+  if (typeof item.call_id !== "string" || typeof item.output !== "string") {
+    return "local_tool_call_not_allowed";
+  }
+  if (item.status !== undefined && item.status !== "completed") {
+    return "input_item_shape_not_allowed";
+  }
+  return undefined;
+};
+
+const validateResponsesTools = (value) => {
+  if (value.tools === undefined) {
+    if (value.tool_choice !== undefined) {
+      return "tool_choice_not_allowed";
+    }
+    return undefined;
+  }
+  if (value.tool_choice !== "auto") {
+    return "tool_choice_not_allowed";
+  }
+  if (!Array.isArray(value.tools)) {
+    return "local_tools_not_allowed";
+  }
+  for (const tool of value.tools) {
+    if (isRecord(tool) && typeof tool.type === "string" && serverSideToolTypes.has(tool.type)) {
+      return "server_side_tools_denied";
+    }
+  }
+  if (value.tools.length !== allowedLocalToolParameterHashes.size) {
+    return "local_tools_not_allowed";
+  }
+  const seen = new Set();
+  for (const tool of value.tools) {
+    const reason = validateToolDefinition(tool, seen);
+    if (reason !== undefined) {
+      return reason;
+    }
+  }
+  return seen.size === allowedLocalToolParameterHashes.size ? undefined : "local_tools_not_allowed";
+};
+
+const validateToolDefinition = (tool, seen) => {
+  if (!isRecord(tool) || !hasOnlyKeys(tool, toolDefinitionKeys)) {
+    return "local_tools_not_allowed";
+  }
+  if (typeof tool.type !== "string") {
+    return "local_tools_not_allowed";
+  }
+  if (serverSideToolTypes.has(tool.type) || tool.type !== "function") {
+    return "server_side_tools_denied";
+  }
+  if (typeof tool.name !== "string" || typeof tool.description !== "string") {
+    return "local_tools_not_allowed";
+  }
+  const expectedHash = allowedLocalToolParameterHashes.get(tool.name);
+  if (expectedHash === undefined || seen.has(tool.name) || !isRecord(tool.parameters)) {
+    return "local_tools_not_allowed";
+  }
+  if (sha256(JSON.stringify(tool.parameters)) !== expectedHash) {
+    return "local_tool_schema_not_allowed";
+  }
+  seen.add(tool.name);
   return undefined;
 };
 
@@ -403,8 +565,8 @@ const validateMessageContent = (content) => {
   for (const part of content) {
     if (
       !isRecord(part) ||
-      !hasOnlyKeys(part, textContentPartKeys) ||
-      part.type !== "text" ||
+      !hasOnlyKeys(part, inputTextContentPartKeys) ||
+      part.type !== "input_text" ||
       typeof part.text !== "string"
     ) {
       return "message_shape_not_allowed";
@@ -584,7 +746,7 @@ const validatePolicy = (raw) => {
       contentType: mustEqual(allowed.contentType, allowedContentType, "allowed.contentType"),
       maxConcurrent: mustInteger(allowed.maxConcurrent, "allowed.maxConcurrent", 1, 1),
       maxOutputTokens: mustInteger(allowed.maxOutputTokens, "allowed.maxOutputTokens", 1, 20_000),
-      maxRequests: mustInteger(allowed.maxRequests, "allowed.maxRequests", 1, 5),
+      maxRequests: mustInteger(allowed.maxRequests, "allowed.maxRequests", 1, 20),
       maxSerializedBodyBytes: mustInteger(
         allowed.maxSerializedBodyBytes,
         "allowed.maxSerializedBodyBytes",
@@ -651,8 +813,8 @@ const validatePolicy = (raw) => {
   if (normalized.allowed.maxOutputTokens !== 20_000) {
     throw new BoundaryError("policy_invalid", "output limit must be exactly 20000 tokens");
   }
-  if (normalized.allowed.maxRequests !== 5) {
-    throw new BoundaryError("policy_invalid", "request count must be exactly 5");
+  if (normalized.allowed.maxRequests !== 20) {
+    throw new BoundaryError("policy_invalid", "request count must be exactly 20");
   }
   if (normalized.allowed.maxSerializedBodyBytes !== 100_000) {
     throw new BoundaryError("policy_invalid", "serialized body bound must be exactly 100000 bytes");
@@ -821,7 +983,7 @@ const writeJsonResponse = (response, status, value) => {
 const extractCostInUsdTicks = (body) => {
   try {
     const parsed = JSON.parse(body.toString("utf-8"));
-    const value = parsed.cost_in_usd_ticks;
+    const value = parsed.usage?.cost_in_usd_ticks ?? parsed.cost_in_usd_ticks;
     return Number.isSafeInteger(value) ? value : undefined;
   } catch {
     return undefined;

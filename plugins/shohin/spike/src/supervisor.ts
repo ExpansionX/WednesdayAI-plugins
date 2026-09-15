@@ -196,7 +196,7 @@ export interface PaidDispatchBoundaryRecord {
   readonly policyPath: string;
   readonly policySha256: string;
   readonly readyPath: string;
-  readonly route: "/v1/chat/completions";
+  readonly route: "/v1/responses";
   readonly statePath: string;
   readonly upstreamKind: "xai" | "loopback-test";
 }
@@ -486,7 +486,7 @@ const paidBoundaryKind = "xai-grok-4.6-local-forwarder-v1" as const;
 const paidBoundaryModel = "xai/grok-4.6";
 const paidBoundaryApiModel = "grok-4.6";
 const paidBoundaryCredentialLeaf = ".local/share/opencode/auth.json" as const;
-const paidBoundaryRoute = "/v1/chat/completions" as const;
+const paidBoundaryRoute = "/v1/responses" as const;
 const paidBoundaryProductionUpstream = "https://api.x.ai/v1";
 const paidBoundaryInputUsdPerMillionTokens = 4;
 const paidBoundaryCachedInputUsdPerMillionTokens = 1;
@@ -823,6 +823,7 @@ export class SpikeSupervisor {
         identity,
         modelIds: options.modelIds,
         oracle: options.costOracle,
+        paidBoundary: options.paidBoundary,
         runDir,
         runId,
         runRoot,
@@ -1636,6 +1637,7 @@ export class SpikeSupervisor {
     identity,
     modelIds,
     oracle,
+    paidBoundary,
     runDir,
     runId,
     runRoot,
@@ -1645,6 +1647,7 @@ export class SpikeSupervisor {
     readonly identity: RunIdentity;
     readonly modelIds?: Partial<ModelIdMap>;
     readonly oracle?: ModelCostOracle;
+    readonly paidBoundary?: PaidDispatchBoundaryOptions;
     readonly runDir: string;
     readonly runId: string;
     readonly runRoot: string;
@@ -1672,6 +1675,7 @@ export class SpikeSupervisor {
           dispatchId,
           modelIds,
           oracle,
+          paidBoundary,
           runId,
           at,
         });
@@ -1731,12 +1735,14 @@ export class SpikeSupervisor {
     dispatchId,
     modelIds,
     oracle,
+    paidBoundary,
     runId,
   }: {
     readonly at: string;
     readonly dispatchId: string;
     readonly modelIds?: Partial<ModelIdMap>;
     readonly oracle?: ModelCostOracle;
+    readonly paidBoundary?: PaidDispatchBoundaryOptions;
     readonly runId: string;
   }): SpendReservation[] {
     if (oracle === undefined) {
@@ -1755,7 +1761,7 @@ export class SpikeSupervisor {
       );
     }
 
-    return costRoles.map((role) => {
+    const boundForRole = (role: CostRole): ModelRoleBound => {
       const bound = oracle.roles[role];
       if (bound === undefined) {
         throw new SpikeSupervisorError(
@@ -1780,6 +1786,30 @@ export class SpikeSupervisor {
           { model: configuredModel, oracleModel: bound.model, role },
         );
       }
+      return bound;
+    };
+
+    if (paidBoundary !== undefined) {
+      const perRequestMaxUsd = paidBoundaryPerRequestMaxUsd(paidBoundary);
+      return Array.from({ length: paidBoundary.maxRequests }, (_, index) => {
+        const role = costRoles[index % costRoles.length];
+        const bound = boundForRole(role);
+        return {
+          at,
+          boundSource: `${bound.boundSource}-responses-http-turn`,
+          ceiling: bound.ceiling,
+          dispatchId,
+          model: bound.model,
+          provider: bound.pricing.provider,
+          reservedUsd: perRequestMaxUsd,
+          role,
+          runId,
+        };
+      });
+    }
+
+    return costRoles.map((role) => {
+      const bound = boundForRole(role);
       return {
         at,
         boundSource: bound.boundSource,
@@ -2133,13 +2163,13 @@ const assertPaidBoundaryOptions = (
     }
   }
   if (
-    boundary.maxRequests !== 5 ||
+    boundary.maxRequests !== 20 ||
     boundary.maxSerializedBodyBytes !== 100_000 ||
     boundary.maxOutputTokens !== 20_000
   ) {
     throw new SpikeSupervisorError(
       "paid_boundary_refused",
-      "Paid boundary limits must match the reviewed Grok 4.6 packet",
+      "Paid boundary limits must match the reviewed Grok 4.6 Responses packet",
     );
   }
   const perRequestMaxUsd = paidBoundaryPerRequestMaxUsd(boundary);

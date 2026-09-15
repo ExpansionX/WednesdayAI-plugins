@@ -606,7 +606,7 @@ const readPaidBoundary = (
       "xai-grok-4.6-local-forwarder-v1",
     ),
     maxOutputTokens: readExactInteger(raw.maxOutputTokens, "paidBoundary.maxOutputTokens", 20_000),
-    maxRequests: readExactInteger(raw.maxRequests, "paidBoundary.maxRequests", 5),
+    maxRequests: readExactInteger(raw.maxRequests, "paidBoundary.maxRequests", 20),
     maxSerializedBodyBytes: readExactInteger(
       raw.maxSerializedBodyBytes,
       "paidBoundary.maxSerializedBodyBytes",
