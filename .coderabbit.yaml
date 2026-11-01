@@ -7,6 +7,9 @@ reviews:
     drafts: false
     auto_incremental_review: false
   path_filters:
+    - "!catalog.json"
+    - "!plugins/example/**"
+    - "!plugins/lifecycle-fixture/**"
     - "!dev-docs/logs/**"
     - "!**/CHANGELOG.md"
     - "!**/pnpm-lock.yaml"
