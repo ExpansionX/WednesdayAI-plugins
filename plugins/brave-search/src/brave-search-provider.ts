@@ -4,19 +4,12 @@ import {
   readStringParam,
   type WebSearchProviderPlugin,
 } from "openclaw/plugin-sdk/provider-web-search";
-import { normalizeBraveLanguageParams, normalizeFreshness } from "./brave-client.js";
+import {
+  normalizeBraveLanguageParams,
+  normalizeFreshness,
+  runBraveSearch,
+} from "./brave-client.js";
 import { resolveBraveApiKey } from "./config.js";
-
-type BraveClientModule = typeof import("./brave-client.js");
-let clientPromise: Promise<BraveClientModule> | undefined;
-function loadClient(): Promise<BraveClientModule> {
-  // Reset cached promise on failure so transient errors don't poison future calls.
-  clientPromise ??= import("./brave-client.js").catch((error) => {
-    clientPromise = undefined;
-    throw error;
-  });
-  return clientPromise;
-}
 
 const BraveSearchSchema = {
   type: "object",
@@ -68,7 +61,6 @@ export function createBraveWebSearchProvider(): WebSearchProviderPlugin {
           "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, and snippets for fast research.",
         parameters: BraveSearchSchema,
         execute: async (args) => {
-          const { runBraveSearch } = await loadClient();
           const params = args as Record<string, unknown>;
           const rawSearchLang = readStringParam(params, "search_lang");
           const rawUiLang = readStringParam(params, "ui_lang");
