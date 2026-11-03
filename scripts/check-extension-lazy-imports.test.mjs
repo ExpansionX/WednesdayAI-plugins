@@ -60,6 +60,35 @@ test("allows lazy-runtime, non-relative, type-only and test files", () => {
   assert.equal(res.status, 0, res.stderr);
 });
 
+test("rejects relative import() hidden behind a comment", () => {
+  const root = makeRoot({
+    "plugins/bad/src/a.ts": `export async function load() {\n  return import(/* webpackChunkName: "client" */ "./client.js");\n}\n`,
+  });
+  const res = run(root);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /plugins\/bad\/src\/a\.ts:2/);
+  assert.match(res.stderr, /bare relative import\(\)/);
+});
+
+test("rejects top-level await in module-level blocks, object literals and for-await", () => {
+  const root = makeRoot({
+    "plugins/bad/index.ts": `async function foo() {\n  return [1];\n}\nconst o = {\n  a: await foo(),\n};\n{\n  await foo();\n}\nfor await (const x of await foo()) {\n  void x;\n}\nexport default o;\n`,
+  });
+  const res = run(root);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /index\.ts:5: top-level await/);
+  assert.match(res.stderr, /index\.ts:8: top-level await/);
+  assert.match(res.stderr, /index\.ts:10: top-level await/);
+});
+
+test("allows await inside expression-bodied arrows and methods", () => {
+  const root = makeRoot({
+    "plugins/ok/index.ts": `async function g() {\n  return 1;\n}\nexport const f = async () => await g();\nexport const h = async () => ({ v: await g() });\nexport const obj = { async m() { return await g(); } };\n`,
+  });
+  const res = run(root);
+  assert.equal(res.status, 0, res.stderr);
+});
+
 test("repo tree passes", () => {
   const res = run(repoRoot);
   assert.equal(res.status, 0, res.stderr);
