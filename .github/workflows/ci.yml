@@ -23,8 +23,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Validate manifests
         run: node scripts/validate-manifest.mjs
-      - name: Generate catalog (drift check)
-        run: node scripts/generate-catalog.mjs --check
+      - name: Catalog check (published, pinned entries only)
+        run: node scripts/catalog.mjs check
+      - name: Script tests
+        run: node --test "scripts/*.test.mjs"
       - name: Validate skills
         run: node scripts/validate-skills.mjs
       - name: Typecheck plugins

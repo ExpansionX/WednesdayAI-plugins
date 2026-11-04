@@ -6,21 +6,9 @@
       "name": "Brave Search",
       "description": "Web search via Brave Search API. Supports region-specific and localized search.",
       "kind": "web-search",
-      "npmSpec": "@wednesdayai/brave-search"
-    },
-    {
-      "id": "example",
-      "name": "Example Plugin",
-      "description": "A minimal fixture plugin for CI validation. Not published.",
-      "kind": "misc",
-      "npmSpec": "@wednesdayai/example"
-    },
-    {
-      "id": "lifecycle-fixture",
-      "name": "Lifecycle Fixture",
-      "description": "Test fixture exercising api.on() lifecycle hooks. Permanent resident — not published.",
-      "kind": "misc",
-      "npmSpec": "@wednesdayai/lifecycle-fixture"
+      "npmSpec": "@wednesdayai/brave-search",
+      "version": "1.0.0",
+      "integrity": "sha512-hvnnWZq6eqgJ0Qua/Te1qAMz44cv+QaQW/9zw0YxquIyOdw6qBiBnv57hSyGFl2PD7uxTqaVwZ85fRD7v/+trw=="
     }
   ]
 }

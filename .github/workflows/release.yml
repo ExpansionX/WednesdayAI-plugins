@@ -1,0 +1,113 @@
+name: release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One pipeline (ADR 1668 §9): tags created with GITHUB_TOKEN never trigger other workflows,
+# so release-please, publish, provenance verification and the catalog write-back run here.
+# Core pins the signer to release.yml@refs/heads/main: do not rename this file.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      publish_paths: ${{ steps.publishable.outputs.paths || '[]' }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - if: steps.release.outputs.releases_created == 'true'
+        uses: actions/checkout@v7
+      - if: steps.release.outputs.releases_created == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - id: publishable
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          PATHS_RELEASED: ${{ steps.release.outputs.paths_released }}
+        run: echo "paths=$(node scripts/catalog.mjs publishable "$PATHS_RELEASED")" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.publish_paths != '[]'
+    runs-on: ubuntu-latest
+    # Protected environment restricted to main; the npm trusted publisher is bound to it.
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        path: ${{ fromJSON(needs.release-please.outputs.publish_paths) }}
+    env:
+      PLUGIN_PATH: ${{ matrix.path }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # npm trusted publishing (OIDC) needs npm >= 11.5.1; no NPM_TOKEN is used.
+      - run: npm install -g npm@11 pnpm@10.23.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "./${PLUGIN_PATH}" run --if-present build
+      - name: Publish with provenance
+        working-directory: ${{ matrix.path }}
+        run: |
+          NAME=$(node -p 'require("./package.json").name')
+          VERSION=$(node -p 'require("./package.json").version')
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${NAME}@${VERSION} already published; skipping (re-run)"
+          else
+            npm publish --provenance --access public
+          fi
+      - name: Verify provenance
+        run: node scripts/verify-provenance.mjs "${PLUGIN_PATH}"
+
+  catalog:
+    needs: [release-please, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Write back pinned catalog entries
+        env:
+          PUBLISH_PATHS: ${{ needs.release-please.outputs.publish_paths }}
+        run: |
+          summary=""
+          for p in $(echo "$PUBLISH_PATHS" | jq -r '.[]'); do
+            line=$(node scripts/catalog.mjs entry "$p")
+            summary="${summary:+$summary, }${line}"
+          done
+          node scripts/catalog.mjs check
+          if git diff --quiet -- catalog.json; then
+            echo "catalog.json unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog.json
+          git commit -m "chore(catalog): ${summary}"
+          # GITHUB_TOKEN pushes do not retrigger workflows, so write-backs converge.
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
