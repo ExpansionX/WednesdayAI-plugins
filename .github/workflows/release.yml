@@ -37,7 +37,9 @@ jobs:
         if: steps.release.outputs.releases_created == 'true'
         env:
           PATHS_RELEASED: ${{ steps.release.outputs.paths_released }}
-        run: echo "paths=$(node scripts/catalog.mjs publishable "$PATHS_RELEASED")" >> "$GITHUB_OUTPUT"
+        run: |
+          paths="$(node scripts/catalog.mjs publishable "$PATHS_RELEASED")"
+          echo "paths=${paths}" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: release-please
