@@ -282,19 +282,34 @@ async function runEntry(root, args) {
   return 0;
 }
 
-function runPublishable(root, args) {
+function runMatrix(root, args) {
+  if (args.length !== 2) {
+    console.error("catalog: usage: catalog.mjs matrix <paths-json> <outputs-json>");
+    return 1;
+  }
   let paths;
   try {
-    paths = JSON.parse(args[0] ?? "");
+    paths = JSON.parse(args[0]);
   } catch {
-    console.error("catalog: publishable expects a JSON array of paths");
+    console.error("catalog: matrix expects a JSON array of paths");
     return 1;
   }
   if (!Array.isArray(paths) || !paths.every((p) => typeof p === "string")) {
-    console.error("catalog: publishable expects a JSON array of paths");
+    console.error("catalog: matrix expects a JSON array of paths");
     return 1;
   }
-  const kept = [];
+  let outputs;
+  try {
+    outputs = JSON.parse(args[1]);
+  } catch {
+    console.error("catalog: matrix expects the release-please outputs JSON object");
+    return 1;
+  }
+  if (typeof outputs !== "object" || outputs === null || Array.isArray(outputs)) {
+    console.error("catalog: matrix expects the release-please outputs JSON object");
+    return 1;
+  }
+  const matrix = [];
   for (const path of paths) {
     const absDir = join(root, path);
     let pkg;
@@ -310,9 +325,18 @@ function runPublishable(root, args) {
       console.error(`catalog: ${blocker}`);
       return 1;
     }
-    kept.push(path);
+    // release-please tags against live main, which can be newer than the push that
+    // started this run; publishing must check out the tagged sha, not github.sha.
+    const sha = outputs[`${path}--sha`];
+    if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+      console.error(
+        `catalog: release-please outputs carry no valid sha for ${path} (expected "${path}--sha")`,
+      );
+      return 1;
+    }
+    matrix.push({ path, ref: sha });
   }
-  console.log(JSON.stringify(kept));
+  console.log(JSON.stringify(matrix));
   return 0;
 }
 
@@ -321,9 +345,9 @@ async function main(argv) {
   const [command, ...args] = argv;
   if (command === "check") return runCheck(root);
   if (command === "entry") return runEntry(root, args);
-  if (command === "publishable") return runPublishable(root, args);
+  if (command === "matrix") return runMatrix(root, args);
   console.error(
-    "catalog: usage: catalog.mjs check | entry <plugin-dir> | publishable <paths-json>",
+    "catalog: usage: catalog.mjs check | entry <plugin-dir> | matrix <paths-json> <outputs-json>",
   );
   return 1;
 }

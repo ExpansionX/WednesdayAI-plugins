@@ -241,14 +241,41 @@ describe("catalog.mjs entry", () => {
   });
 });
 
-describe("catalog.mjs publishable", () => {
-  it("drops private packages", async () => {
+describe("catalog.mjs matrix", () => {
+  const SHA_A = "a".repeat(40);
+  const SHA_B = "b".repeat(40);
+
+  it("emits {path, ref} rows for publishable paths and drops private ones", async () => {
     const dir = makeRepo({
       catalog: { version: 1, plugins: [validEntry("alpha")] },
       plugins: [plugin("alpha"), plugin("secret", { private: true })],
     });
-    const res = await run(dir, ["publishable", '["plugins/alpha","plugins/secret"]']);
+    const res = await run(dir, [
+      "matrix",
+      '["plugins/alpha","plugins/secret"]',
+      JSON.stringify({ "plugins/alpha--sha": SHA_A, "plugins/secret--sha": SHA_B }),
+    ]);
     assert.equal(res.code, 0, res.stderr);
-    assert.equal(res.stdout, '["plugins/alpha"]\n');
+    assert.equal(res.stdout, `[{"path":"plugins/alpha","ref":"${SHA_A}"}]\n`);
+  });
+
+  it("fails when a publishable path has no release-please sha", async () => {
+    const dir = makeRepo({
+      catalog: { version: 1, plugins: [validEntry("alpha")] },
+      plugins: [plugin("alpha")],
+    });
+    const res = await run(dir, ["matrix", '["plugins/alpha"]', "{}"]);
+    assert.equal(res.code, 1);
+    assert.match(res.stderr, /no valid sha for plugins\/alpha/);
+  });
+
+  it("fails on malformed outputs JSON", async () => {
+    const dir = makeRepo({
+      catalog: { version: 1, plugins: [validEntry("alpha")] },
+      plugins: [plugin("alpha")],
+    });
+    const res = await run(dir, ["matrix", '["plugins/alpha"]', "not json"]);
+    assert.equal(res.code, 1);
+    assert.match(res.stderr, /outputs JSON object/);
   });
 });

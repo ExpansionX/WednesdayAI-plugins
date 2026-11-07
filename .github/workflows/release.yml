@@ -20,7 +20,7 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      publish_paths: ${{ steps.publishable.outputs.paths || '[]' }}
+      publish_matrix: ${{ steps.matrix.outputs.value || '[]' }}
     steps:
       - id: release
         uses: googleapis/release-please-action@v5
@@ -29,21 +29,25 @@ jobs:
           manifest-file: .release-please-manifest.json
       - if: steps.release.outputs.releases_created == 'true'
         uses: actions/checkout@v7
+        with:
+          # release-please resolves releases against live main, not github.sha.
+          ref: main
       - if: steps.release.outputs.releases_created == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: 24
-      - id: publishable
+      - id: matrix
         if: steps.release.outputs.releases_created == 'true'
         env:
           PATHS_RELEASED: ${{ steps.release.outputs.paths_released }}
+          RELEASE_OUTPUTS: ${{ toJSON(steps.release.outputs) }}
         run: |
-          paths="$(node scripts/catalog.mjs publishable "$PATHS_RELEASED")"
-          echo "paths=${paths}" >> "$GITHUB_OUTPUT"
+          matrix="$(node scripts/catalog.mjs matrix "$PATHS_RELEASED" "$RELEASE_OUTPUTS")"
+          echo "value=${matrix}" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.publish_paths != '[]'
+    if: needs.release-please.outputs.publish_matrix != '[]'
     runs-on: ubuntu-latest
     # Protected environment restricted to main; the npm trusted publisher is bound to it.
     environment: npm-publish
@@ -53,11 +57,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        path: ${{ fromJSON(needs.release-please.outputs.publish_paths) }}
+        include: ${{ fromJSON(needs.release-please.outputs.publish_matrix) }}
     env:
       PLUGIN_PATH: ${{ matrix.path }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Publish the tagged tree: release-please tags live main, which can be
+          # newer than the triggering push (github.sha) when runs queue.
+          ref: ${{ matrix.ref }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -87,16 +95,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: main
           fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Write back pinned catalog entries
         env:
-          PUBLISH_PATHS: ${{ needs.release-please.outputs.publish_paths }}
+          PUBLISH_MATRIX: ${{ needs.release-please.outputs.publish_matrix }}
         run: |
           summary=""
-          for p in $(echo "$PUBLISH_PATHS" | jq -r '.[]'); do
+          for p in $(echo "$PUBLISH_MATRIX" | jq -r '.[].path'); do
             line=$(node scripts/catalog.mjs entry "$p")
             summary="${summary:+$summary, }${line}"
           done
