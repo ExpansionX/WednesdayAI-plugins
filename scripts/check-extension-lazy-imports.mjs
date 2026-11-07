@@ -35,11 +35,24 @@ function scriptKind(file) {
   return file.endsWith(".ts") || file.endsWith(".mts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
 }
 
+/** Unwrap ParenthesizedExpression / AsExpression / SatisfiesExpression wrappers. */
+function unwrapTransparent(node) {
+  while (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node)
+  ) {
+    node = node.expression;
+  }
+  return node;
+}
+
 function relativeSpecifier(arg) {
   if (!arg) return null;
+  const expr = unwrapTransparent(arg);
   let text = null;
-  if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) text = arg.text;
-  else if (ts.isTemplateExpression(arg)) text = arg.head.text;
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) text = expr.text;
+  else if (ts.isTemplateExpression(expr)) text = expr.head.text;
   if (text === null) return null;
   return /^\.{1,2}\//.test(text) ? text : null;
 }
@@ -89,9 +102,17 @@ for (const file of files) {
     ) {
       violations.push(`${rel}:${lineOf(node)}: top-level await`);
     }
-    const childScope =
-      inFunction || ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node);
-    ts.forEachChild(node, (child) => visit(child, childScope));
+    const entersScope = ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node);
+    const childScope = inFunction || entersScope;
+    ts.forEachChild(node, (child) => {
+      // Computed member names evaluate in the enclosing scope at class/object
+      // definition time, not inside the method body.
+      const scope =
+        entersScope && child === node.name && ts.isComputedPropertyName(child)
+          ? inFunction
+          : childScope;
+      visit(child, scope);
+    });
   };
   visit(sf, false);
 }

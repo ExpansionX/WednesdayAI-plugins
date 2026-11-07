@@ -89,6 +89,37 @@ test("allows await inside expression-bodied arrows and methods", () => {
   assert.equal(res.status, 0, res.stderr);
 });
 
+test("rejects relative import() wrapped in parentheses, as and satisfies", () => {
+  const root = makeRoot({
+    "plugins/bad/src/a.ts": `export async function load() {\n  return import(("./b.js"));\n}\n`,
+    "plugins/bad/src/b.ts": `export async function load() {\n  return import("./c.js" as string);\n}\n`,
+    "plugins/bad/src/c.ts": `export async function load() {\n  return import("./d.js" satisfies string);\n}\n`,
+  });
+  const res = run(root);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /a\.ts:2: bare relative import\(\)/);
+  assert.match(res.stderr, /b\.ts:2: bare relative import\(\)/);
+  assert.match(res.stderr, /c\.ts:2: bare relative import\(\)/);
+});
+
+test("rejects top-level await in computed method names", () => {
+  const root = makeRoot({
+    "plugins/bad/src/a.ts": `async function f() {\n  return "k";\n}\nexport const o = { [await f()]() {} };\nexport class C { [await f()]() {} }\n`,
+  });
+  const res = run(root);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /a\.ts:4: top-level await/);
+  assert.match(res.stderr, /a\.ts:5: top-level await/);
+});
+
+test("allows await inside bodies of computed-named methods", () => {
+  const root = makeRoot({
+    "plugins/ok/index.ts": `async function g() {\n  return "k";\n}\nexport const obj = { async [g()]() {\n  return await g();\n} };\nexport class C { async [g()]() {\n  return await g();\n} }\n`,
+  });
+  const res = run(root);
+  assert.equal(res.status, 0, res.stderr);
+});
+
 test("repo tree passes", () => {
   const res = run(repoRoot);
   assert.equal(res.status, 0, res.stderr);
