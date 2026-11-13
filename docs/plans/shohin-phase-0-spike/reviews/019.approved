@@ -1,0 +1,82 @@
+# Task 019 cleanup approval — SCOPE-LIMITED
+
+> **READ THIS BEFORE ANY DELETION.** This token does **not** approve the full task-019
+> deletion scope. It approves exactly one bounded action: removal of the registered Git
+> worktrees under `/tmp/shohin-*` and termination of processes whose working directory is
+> inside them. Everything else task 019 lists — removing `plugins/shohin/spike/*` tracked
+> sources, uninstalling the managed `shohin-spike` gateway extension, deleting the
+> installed extension directory, removing the spike runtime/dependencies, deleting the
+> branch `spike/shohin-spike-target` or any other branch, and editing the spike report's
+> SC8 section — remains **UNAUTHORIZED** and still requires a separate, explicit,
+> operator-authored token. `VAL-CLEAN-001`, `VAL-CLEAN-002` and `VAL-CLEAN-003` are **not**
+> satisfied by this token.
+
+approver: operator
+approver-channel: direct user instruction to the Zenith orchestrator session
+        (project `20260913T063314Z-resume-shohin-phase-0-spike-from-existing-docs-superpowers-specs`)
+authored-utc: 2026-09-17T06:59:19Z
+recorded-utc: 2026-09-17T06:59:19Z
+recorded-by: Zenith orchestrator (transcription only — the approval sentence below is the
+        operator's own wording, reproduced verbatim and not composed, inferred, widened or
+        paraphrased by any agent)
+decision-record: decisions/088-operator-scoped-worktree-cleanup-authorization.md,
+        decisions/089-cleanwt-contract-revision-after-adversarial-review.md,
+        decisions/090-cleanwt-review-pass-2-resolutions-and-freeze-seal.md,
+        decisions/091-cleanwt-review-pass-3-resolutions.md
+        (Zenith project root. This field is now CLOSED: no further scaffolding amendment will
+        be made to this file, so its hash can be frozen by the freeze task.)
+contract-targets: VAL-CLEANWT-001 .. VAL-CLEANWT-014
+        (was `001 .. 009` as first recorded; decision089's adversarial review rewrote the
+        nine assertions as fourteen. The five added -- 010 credentials/transcripts
+        non-contact, 011 divergence-stops-the-lane, 012 post-state/residue, 013 refusal
+        fixture, 014 guard-survives -- are all ADDITIONAL CONSTRAINTS on the same bounded
+        action. They narrow this token; they do not widen it.)
+
+## Approval token (verbatim, operator-authored)
+
+I approve cleanup on 2026-09-17 of all /tmp/shohin-* Git worktrees created by this Shohin workstream, including terminating processes whose working directory is inside them; preserve branches, Zenith evidence, run-data, credentials, transcripts, the main worktree, and vivid-otter.
+
+## Approved deletion scope (named, exhaustive)
+
+IN SCOPE — removal:
+1. Every **registered** Git worktree whose worktree path begins with `/tmp/shohin-`, as
+   reported by `git worktree list --porcelain` for the owning repository
+   `/data/Code/WednesdayAI-plugins`. At recording time this is exactly 34 worktrees
+   (33 spike lane worktrees under six `/tmp/shohin-r*-worktrees/` containers, plus
+   `/tmp/shohin-spike-target-worktree-010`). The live registered set at execution time is
+   authoritative; the frozen pre-state inventory is the record of what was acted on.
+2. Removal is performed through `git worktree remove` (no `--force` unless per-path
+   clean-state evidence supports that exact path).
+   **Orchestrator narrowing (decision089, non-operator text):** the executing lane is
+   denied `--force` entirely. All 34 in-scope worktrees measured clean and unlocked, so
+   no path needs it; a failed removal is reported as a finding, never forced. This is
+   stricter than the operator's wording above and never looser.
+3. Stale Git worktree metadata that results from (1) may be pruned with `git worktree prune`.
+
+IN SCOPE — process termination:
+4. Processes whose `/proc/<pid>/cwd` resolves **inside** one of the exact worktree paths in
+   (1). SIGTERM first, bounded wait, SIGKILL only if the process is still alive afterwards.
+
+OUT OF SCOPE — preserve, do not touch:
+- **Every branch.** No branch is deleted, moved or re-pointed — including all 34 `spike/*`
+  branches and `spike/shohin-spike-target`.
+- All Zenith project state and evidence under
+  `~/.zenith/projects/20260913T063314Z-resume-shohin-phase-0-spike-from-existing-docs-superpowers-specs/`.
+- All run-data under `~/.openclaw/`, including `~/.openclaw/shohin-spike/run-data/` and
+  `spend-ledger.json`.
+- All credentials and all session transcripts, including the decision073 mode-0600
+  transcript. These stay under the decision074 hands-off directive: not read, rendered,
+  hashed, checksummed, `stat`ed, copied, moved or deleted. Preservation is proven by
+  **non-contact** (their absence from the executed command log), never by inspecting them.
+- The main worktree `/data/Code/WednesdayAI-plugins`.
+- The `vivid-otter` worktree
+  (`/data/.worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter`, registered as
+  `/home/david/.local/share/opencode/worktree/74d2b924bcab7880c9787f573e996a33c50e6588/vivid-otter`).
+- Every `/tmp/shohin-*` path that is **not** a registered Git worktree (~129 files and
+  directories at recording time, including `/tmp/shohin-preflight-*`,
+  `/tmp/shohin-r10-*-worktrees/`, `/tmp/shohin-r11-*-worktrees/` and the `*.mjs` helpers).
+  These are untouched; they are not worktrees and this token does not name them.
+- Processes whose cwd is a `/tmp/shohin-*` path that is not a registered worktree — for
+  example the shell whose cwd is the already-deleted
+  `/tmp/shohin-r9-approved-profile-20260914t160533-worktrees/success`. Out of scope, not
+  signalled.
